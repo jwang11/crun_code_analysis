@@ -1,5 +1,5 @@
 # CRUN运行容器
-> crun是一个高效且低内存需求的OCI runtime实现. 它是完全用c语言编写的。<br>
+> crun是一个高效且低内存需求的OCI runtime实现。它是完全用c语言编写的。<br>
 > crun实现满足 OCI Container Runtime specifications (https://github.com/opencontainers/runtime-spec).
 
 ### 代码分析
@@ -65,7 +65,7 @@ main (int argc, char **argv)
 ```
 
 - crun_command_create
-```
+```diff
 static struct argp_option options[]
     = { { "bundle", 'b', "DIR", 0, "container bundle (default \".\")", 0 },
         { "config", 'f', "FILE", 0, "override the config file name", 0 },
@@ -109,6 +109,7 @@ crun_command_create (struct crun_global_arguments *global_args, int argc, char *
         }
     }
 
++ // bundle路径必须是绝对路径
   /* Make sure the bundle is an absolute path.  */
   if (bundle == NULL)
     bundle = bundle_cleanup = getcwd (NULL, 0);
@@ -139,5 +140,38 @@ crun_command_create (struct crun_global_arguments *global_args, int argc, char *
     crun_context.preserve_fds += strtoll (getenv ("LISTEN_FDS"), NULL, 10);
 
   return libcrun_container_create (&crun_context, container, 0, err);
+}
+```
+** ```
+int
+init_libcrun_context (libcrun_context_t *con, const char *id, struct crun_global_arguments *glob, libcrun_error_t *err)
+{
+  int ret;
+
+  con->id = id;
+  con->state_root = glob->root;
+  con->systemd_cgroup = glob->option_systemd_cgroup;
+  con->force_no_cgroup = glob->option_force_no_cgroup;
+  con->notify_socket = getenv ("NOTIFY_SOCKET");
+  con->fifo_exec_wait_fd = -1;
+
+  ret = libcrun_init_logging (&con->output_handler, &con->output_handler_arg, id, glob->log, err);
+  if (UNLIKELY (ret < 0))
+    return ret;
+
+  if (glob->log_format)
+    {
+      ret = libcrun_set_log_format (glob->log_format, err);
+      if (UNLIKELY (ret < 0))
+        return ret;
+    }
+
+  if (con->bundle == NULL)
+    con->bundle = ".";
+
+  if (con->config_file == NULL)
+    con->config_file = "./config.json";
+
+  return 0;
 }
 ```
