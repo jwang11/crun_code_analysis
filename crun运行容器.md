@@ -424,8 +424,9 @@ libcrun_container_create (libcrun_context_t *context, libcrun_container_t *conta
   exit (ret ? EXIT_FAILURE : 0);
 }
 ```
+
 - crun_command_create -> libcrun_container_create -> libcrun_container_run_internal
-```
+```diff
 static int
 libcrun_container_run_internal (libcrun_container_t *container, libcrun_context_t *context, int container_ready_fd,
                                 libcrun_error_t *err)
@@ -540,6 +541,7 @@ libcrun_container_run_internal (libcrun_container_t *container, libcrun_context_
   if (UNLIKELY (cgroup_mode < 0))
     return cgroup_mode;
 
++ // 运行一个linux容器，容器运行后，调用container_init函数初始化
   pid = libcrun_run_linux_container (container, container_init, &container_args, &sync_socket, err);
   if (UNLIKELY (pid < 0))
     return pid;
@@ -734,7 +736,7 @@ libcrun_container_run_internal (libcrun_container_t *container, libcrun_context_
 ```
 
 - [libcrun_run_linux_container](https://github.com/containers/crun/blob/main/src/libcrun/linux.c)
-```
+```diff
 pid_t
 libcrun_run_linux_container (libcrun_container_t *container, container_entrypoint_t entrypoint, void *args,
                              int *sync_socket_out, libcrun_error_t *err)
@@ -752,7 +754,7 @@ libcrun_run_linux_container (libcrun_container_t *container, container_entrypoin
   pid_t pid;
   size_t i;
   int ret;
-
++ // 初始化命名空间,打开命名空间fd
   ret = configure_init_status (&init_status, container, err);
   if (UNLIKELY (ret < 0))
     return ret;
