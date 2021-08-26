@@ -997,7 +997,7 @@ libcrun_run_linux_container (libcrun_container_t *container, container_entrypoin
 
 - libcrun_run_linux_container -> configure_init_status
 > 处理config.json里的namespace，分为unshare和share两类
-```
+```diff
 static int
 configure_init_status (struct init_status_s *ns, libcrun_container_t *container, libcrun_error_t *err)
 {
@@ -1067,7 +1067,7 @@ configure_init_status (struct init_status_s *ns, libcrun_container_t *container,
 ```
 
 - libcrun_run_linux_container -> init_container
-```
+```diff
 static int
 init_container (libcrun_container_t *container, int sync_socket_container, struct init_status_s *init_status,
                 libcrun_error_t *err)
