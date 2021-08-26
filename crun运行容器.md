@@ -310,6 +310,7 @@ make_container (runtime_spec_schema_config_schema *container_def)
   libcrun_container_t *container = xmalloc0 (sizeof (*container));
   container->container_def = container_def;
 
++ // 设置host的uid和gid
   container->host_uid = geteuid ();
   container->host_gid = getegid ();
 
@@ -740,7 +741,8 @@ libcrun_container_run_internal (libcrun_container_t *container, libcrun_context_
 ```
 
 - [libcrun_run_linux_container](https://github.com/containers/crun/blob/main/src/libcrun/linux.c)
-> linux container的初始化总体分为host端和container端，container端是host端第一次fork出来的，container端里面为了设置namespace还会fork一次
+> linux container的初始化总体分为host端和container端，container端是host端第一次fork出来 <br>
+> container端里面为了正确设置namespace还会fork
 ```diff
 pid_t
 libcrun_run_linux_container (libcrun_container_t *container, container_entrypoint_t entrypoint, void *args,
@@ -869,6 +871,7 @@ libcrun_run_linux_container (libcrun_container_t *container, container_entrypoin
 
   if (pid)
     {
++     // host端    
       cleanup_pid pid_t pid_to_clean = pid;
 
       ret = save_external_descriptors (container, pid, err);
@@ -895,7 +898,7 @@ libcrun_run_linux_container (libcrun_container_t *container, container_entrypoin
           if (UNLIKELY (ret != sizeof (new_pid)))
             return crun_make_error (err, errno, "read pid from sync socket");
 
-+         // 等第一个子进程结束
++         // 等container端第一个子进程结束
           /* Cleanup the first process.  */
           ret = TEMP_FAILURE_RETRY (waitpid (pid, NULL, 0));
 
@@ -955,6 +958,7 @@ libcrun_run_linux_container (libcrun_container_t *container, container_entrypoin
       if (UNLIKELY (ret < 0))
         return ret;
 
++     // 把host端的socket通过参数传递到libcrun_run_linux_container函数外面，由libcrun_container_run_internal继续处理
       *sync_socket_out = get_and_reset (&sync_socket_host);
 
       pid_to_clean = 0;
@@ -1048,7 +1052,7 @@ configure_init_status (struct init_status_s *ns, libcrun_container_t *container,
           fd = open (def->linux->namespaces[i]->path, O_RDONLY | O_CLOEXEC);
           if (UNLIKELY (fd < 0))
             return crun_make_error (err, errno, "open `%s`", def->linux->namespaces[i]->path);
-+         // NEWUSER的namespace要单独标注，后面有不同的处理逻辑
++         // share USER的namespace要单独标注，后面有不同的处理逻辑
           if (value == CLONE_NEWUSER)
             {
               ns->userns_index = ns->fd_len;
@@ -1063,6 +1067,7 @@ configure_init_status (struct init_status_s *ns, libcrun_container_t *container,
         }
     }
 
++ // 如果host_uid!=0(非root)，NEWUSER namespace必须加上
   if (container->host_uid && (ns->all_namespaces & CLONE_NEWUSER) == 0)
     {
       libcrun_warning ("non root user need to have an 'user' namespace");
@@ -1266,7 +1271,7 @@ init_container (libcrun_container_t *container, int sync_socket_container, struc
 }
 ```
 
-- libcrun_run_linux_container -> libcrun_set_usernamespace
+- ***libcrun_run_linux_container -> libcrun_set_usernamespace***
 > 生成uidmap和gidmap文件
 ```
 int
