@@ -736,6 +736,7 @@ libcrun_container_run_internal (libcrun_container_t *container, libcrun_context_
 ```
 
 - [libcrun_run_linux_container](https://github.com/containers/crun/blob/main/src/libcrun/linux.c)
+> linux container的初始化总体分为host端和container端，container端是host端第一次fork出来的，container端里面为了设置namespace还会fork一次
 ```diff
 pid_t
 libcrun_run_linux_container (libcrun_container_t *container, container_entrypoint_t entrypoint, void *args,
@@ -885,7 +886,7 @@ libcrun_run_linux_container (libcrun_container_t *container, container_entrypoin
           if (UNLIKELY (ret < 0))
             return ret;
 
-+         // 和container通信，得到new_pid
++         // 和container端通信，得到new_pid
           ret = TEMP_FAILURE_RETRY (read (sync_socket_host, &new_pid, sizeof (new_pid)));
           if (UNLIKELY (ret != sizeof (new_pid)))
             return crun_make_error (err, errno, "read pid from sync socket");
@@ -896,7 +897,7 @@ libcrun_run_linux_container (libcrun_container_t *container, container_entrypoin
 
           pid_to_clean = pid = new_pid;
 
-+         // 和container通信
++         // 和container通信，确保new_pid正常工作
           ret = TEMP_FAILURE_RETRY (write (sync_socket_host, &success, 1));
           if (UNLIKELY (ret < 0))
             return ret;
@@ -939,6 +940,7 @@ libcrun_run_linux_container (libcrun_container_t *container, container_entrypoin
           if (UNLIKELY (ret < 0))
             return ret;
 
++         // 等待new_pid子进程退出
           /* Cleanup the first process.  */
           waitpid (pid, NULL, 0);
 
@@ -955,6 +957,7 @@ libcrun_run_linux_container (libcrun_container_t *container, container_entrypoin
       return pid;
     }
 
++ // 这里是container端了
   /* Inside the container process.  */
 
   ret = close_and_reset (&sync_socket_host);
@@ -986,6 +989,7 @@ libcrun_run_linux_container (libcrun_container_t *container, container_entrypoin
   if (container->context->notify_socket)
     xasprintf (&notify_socket_env, "NOTIFY_SOCKET=%s/notify", container->context->notify_socket);
 
++ // 执行entrypont的命令
   entrypoint (args, notify_socket_env, sync_socket_container, err);
 
   /* ENTRYPOINT returns only on an error, fallback here: */
@@ -1067,6 +1071,11 @@ configure_init_status (struct init_status_s *ns, libcrun_container_t *container,
 ```
 
 - libcrun_run_linux_container -> init_container
+> init_container是属于container进程。
+> 1. 先处理container进程的NEWPID和NEWTIME namespace，setns设置为目标namespace <br>
+> 2. fork一次。fork的父进程把new_pid传回给host端，然后退出 <br>
+> 3. 在子进程里，setns需要share的namespace
+
 ```diff
 static int
 init_container (libcrun_container_t *container, int sync_socket_container, struct init_status_s *init_status,
@@ -1214,6 +1223,7 @@ init_container (libcrun_container_t *container, int sync_socket_container, struc
         }
     }
 
++ // 需要再fork一次
   if (init_status->must_fork)
     {
       /* A PID and a time namespace are joined when the new process is created.  */
@@ -1221,6 +1231,7 @@ init_container (libcrun_container_t *container, int sync_socket_container, struc
       if (UNLIKELY (pid_container < 0))
         return crun_make_error (err, errno, "cannot fork");
 
++     // 把grand child的PID发给host端，这才是最后的container_pid
       /* Report back the new PID.  */
       if (pid_container)
         {
@@ -1247,6 +1258,203 @@ init_container (libcrun_container_t *container, int sync_socket_container, struc
   get_private_data (container)->procfsfd = get_and_reset (&procfsfd);
   get_private_data (container)->mqueuefsfd = get_and_reset (&mqueuefsfd);
 
+  return 0;
+}
+```
+
+- libcrun_run_linux_container -> libcrun_set_usernamespace
+> 生成uidmap和gidmap文件
+```
+int
+libcrun_set_usernamespace (libcrun_container_t *container, pid_t pid, libcrun_error_t *err)
+{
+#define MAPPING_FMT_SIZE ("%" PRIu32 " %" PRIu32 " %" PRIu32 "\n")
+#define MAPPING_FMT_1 ("%" PRIu32 " %" PRIu32 " 1\n")
+  cleanup_free char *uid_map_file = NULL;
+  cleanup_free char *gid_map_file = NULL;
+  cleanup_free char *uid_map = NULL;
+  cleanup_free char *gid_map = NULL;
+  int uid_map_len, gid_map_len;
+  int ret = 0;
+  runtime_spec_schema_config_schema *def = container->container_def;
+
+  if ((get_private_data (container)->unshare_flags & CLONE_NEWUSER) == 0)
+    return 0;
+
+  if (! def->linux->uid_mappings_len)
+    {
+      uid_map_len = format_default_id_mapping (&uid_map, container->container_uid, container->host_uid, 1);
+      if (uid_map == NULL)
+        {
+          if (container->host_uid)
+            uid_map_len = xasprintf (&uid_map, MAPPING_FMT_1, 0, container->host_uid);
+          else
+            uid_map_len = xasprintf (&uid_map, MAPPING_FMT_SIZE, 0, container->host_uid, container->container_uid + 1);
+        }
+    }
+  else
+    {
+      size_t written = 0, s;
+      char buffer[64];
+      uid_map = xmalloc (sizeof (buffer) * def->linux->uid_mappings_len + 1);
+      for (s = 0; s < def->linux->uid_mappings_len; s++)
+        {
+          size_t len;
+
+          len = sprintf (buffer, MAPPING_FMT_SIZE, def->linux->uid_mappings[s]->container_id,
+                         def->linux->uid_mappings[s]->host_id, def->linux->uid_mappings[s]->size);
+          memcpy (uid_map + written, buffer, len);
+          written += len;
+        }
+      uid_map[written] = '\0';
+      uid_map_len = written;
+    }
+
+  if (! def->linux->gid_mappings_len)
+    {
+      gid_map_len = format_default_id_mapping (&gid_map, container->container_gid, container->host_uid, 0);
+      if (gid_map == NULL)
+        {
+          if (container->host_gid)
+            gid_map_len = xasprintf (&gid_map, MAPPING_FMT_1, container->container_gid, container->host_gid);
+          else
+            gid_map_len = xasprintf (&gid_map, MAPPING_FMT_SIZE, 0, container->host_gid, container->container_gid + 1);
+        }
+    }
+  else
+    {
+      size_t written = 0, s;
+      char buffer[64];
+      gid_map = xmalloc (sizeof (buffer) * def->linux->gid_mappings_len + 1);
+      for (s = 0; s < def->linux->gid_mappings_len; s++)
+        {
+          size_t len;
+
+          len = sprintf (buffer, MAPPING_FMT_SIZE, def->linux->gid_mappings[s]->container_id,
+                         def->linux->gid_mappings[s]->host_id, def->linux->gid_mappings[s]->size);
+          memcpy (gid_map + written, buffer, len);
+          written += len;
+        }
+      gid_map[written] = '\0';
+      gid_map_len = written;
+    }
+
+  if (container->host_uid)
+    ret = newgidmap (pid, gid_map, err);
+  if (container->host_uid == 0 || ret < 0)
+    {
+      if (ret < 0)
+        {
+          if (! def->linux->uid_mappings_len)
+            libcrun_warning ("unable to invoke newgidmap, will try creating a user namespace with single mapping as an alternative");
+          crun_error_release (err);
+        }
+
+      xasprintf (&gid_map_file, "/proc/%d/gid_map", pid);
+      ret = write_file (gid_map_file, gid_map, gid_map_len, err);
+      if (ret < 0 && ! def->linux->gid_mappings_len)
+        {
+          size_t single_mapping_len;
+          char single_mapping[32];
+          crun_error_release (err);
+
+          ret = deny_setgroups (container, pid, err);
+          if (UNLIKELY (ret < 0))
+            return ret;
+
+          single_mapping_len = sprintf (single_mapping, MAPPING_FMT_1, container->container_gid, container->host_gid);
++          ret = write_file (gid_map_file, single_mapping, single_mapping_len, err);
+        }
+    }
+  if (UNLIKELY (ret < 0))
+    return ret;
+
+  if (container->host_uid)
+    ret = newuidmap (pid, uid_map, err);
+  if (container->host_uid == 0 || ret < 0)
+    {
+      if (ret < 0)
+        {
+          if (! def->linux->uid_mappings_len)
+            libcrun_warning ("unable to invoke newuidmap, will try creating a user namespace with single mapping as an alternative");
+          crun_error_release (err);
+        }
+
+      xasprintf (&uid_map_file, "/proc/%d/uid_map", pid);
+      ret = write_file (uid_map_file, uid_map, uid_map_len, err);
+      if (ret < 0 && ! def->linux->uid_mappings_len)
+        {
+          size_t single_mapping_len;
+          char single_mapping[32];
+          crun_error_release (err);
+
+          if (! get_private_data (container)->deny_setgroups)
+            {
+              ret = deny_setgroups (container, pid, err);
+              if (UNLIKELY (ret < 0))
+                return ret;
+            }
+
+          single_mapping_len = sprintf (single_mapping, MAPPING_FMT_1, container->container_uid, container->host_uid);
++          ret = write_file (uid_map_file, single_mapping, single_mapping_len, err);
+        }
+    }
+  if (UNLIKELY (ret < 0))
+    return ret;
+  return 0;
+
+#undef MAPPING_FMT_SIZE
+#undef MAPPING_FMT_1
+}
+```
+- libcrun_run_linux_container -> init_container -> join_namespaces
+```diff
+static int
+join_namespaces (runtime_spec_schema_config_schema *def, int *namespaces_to_join, int n_namespaces_to_join,
+                 int *namespaces_to_join_index, bool ignore_join_errors, libcrun_error_t *err)
+{
+  int ret;
+  int i;
+
+  for (i = 0; i < n_namespaces_to_join; i++)
+    {
+      cleanup_free char *cwd = NULL;
+      int orig_index = namespaces_to_join_index[i];
+      int value;
+
+      if (namespaces_to_join[i] < 0)
+        continue;
+
++     // 忽略NEWUSER
+      /* Skip the user namespace.  */
+      value = libcrun_find_namespace (def->linux->namespaces[orig_index]->type);
+      if (value == CLONE_NEWUSER)
+        continue;
+
+      if (value == CLONE_NEWNS)
+        {
+          cwd = getcwd (NULL, 0);
+          if (UNLIKELY (cwd == NULL))
+            return crun_make_error (err, errno, "cannot get current working directory");
+        }
+
+      ret = setns (namespaces_to_join[i], value);
+      if (UNLIKELY (ret < 0))
+        {
+          if (ignore_join_errors)
+            continue;
+          return crun_make_error (err, errno, "cannot setns `%s`", def->linux->namespaces[orig_index]->path);
+        }
+
+      close_and_reset (&namespaces_to_join[i]);
+
+      if (value == CLONE_NEWNS)
+        {
+          ret = chdir (cwd);
+          if (UNLIKELY (ret < 0))
+            return crun_make_error (err, errno, "chdir(.)");
+        }
+    }
   return 0;
 }
 ```
