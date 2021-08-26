@@ -64,7 +64,7 @@ main (int argc, char **argv)
 }
 ```
 
-- crun_command_create
+- ***crun_command_create****
 ```diff
 static struct argp_option options[]
     = { { "bundle", 'b', "DIR", 0, "container bundle (default \".\")", 0 },
@@ -127,11 +127,13 @@ crun_command_create (struct crun_global_arguments *global_args, int argc, char *
         libcrun_fail_with_error (errno, "chdir `%s` failed", bundle);
     }
 
-  ret = init_libcrun_context (&crun_context, argv[first_arg], global_args, err);
++  // 根据命令行参数初始化上线文
++  ret = init_libcrun_context (&crun_context, argv[first_arg], global_args, err);
   if (UNLIKELY (ret < 0))
     return ret;
 
-  container = libcrun_container_load_from_file (config_file, err);
++  // 根据oci规范生成container对象
++  container = libcrun_container_load_from_file (config_file, err);
   if (container == NULL)
     libcrun_fail_with_error (0, "error loading config.json");
 
@@ -139,13 +141,12 @@ crun_command_create (struct crun_global_arguments *global_args, int argc, char *
   if (getenv ("LISTEN_FDS"))
     crun_context.preserve_fds += strtoll (getenv ("LISTEN_FDS"), NULL, 10);
 
-+ // // 通过spec和上下文，创建一个容器
++ // // 按照spec和上下文，创建一个容器
   return libcrun_container_create (&crun_context, container, 0, err);
 }
 ```
 
-
-** crun_command_create -> init_libcrun_context
+- ***crun_command_create -> init_libcrun_context***
 ```diff
 struct libcrun_context_s
 {
@@ -212,7 +213,7 @@ init_libcrun_context (libcrun_context_t *con, const char *id, struct crun_global
 }
 ```
 
-- crun_command_create -> libcrun_container_load_from_file
+- ***crun_command_create -> libcrun_container_load_from_file***
 > 解析config.json，照oci spec规范load进runtime_spec_schema_config_schema(container->container_def)，返回libcrun_container_t结构
 ```diff
 + //container的结构定义，包含了schema和context
@@ -319,7 +320,7 @@ make_container (runtime_spec_schema_config_schema *container_def)
 ```
 
 ### 创建容器
-- crun_command_create -> libcrun_container_create
+- ***crun_command_create -> libcrun_container_create***
 ```diff
 int
 libcrun_container_create (libcrun_context_t *context, libcrun_container_t *container, unsigned int options,
@@ -359,25 +360,28 @@ libcrun_container_create (libcrun_context_t *context, libcrun_container_t *conta
   context->fifo_exec_wait_fd = exec_fifo_fd;
   exec_fifo_fd = -1;
 
++ // 按照是否LIBCRUN_RUN_OPTIONS_PREFORK有两种路径
   if ((options & LIBCRUN_RUN_OPTIONS_PREFORK) == 0)
++ // 没有LIBCRUN_RUN_OPTIONS_PREFORK，走这里  
     {
       ret = libcrun_copy_config_file (context->id, context->state_root, context->config_file, context->config_file_content, err);
       if (UNLIKELY (ret < 0))
         return ret;
 +     // container_ready_fd=-1
-      ret = libcrun_container_run_internal (container, context, -1, err);
++     ret = libcrun_container_run_internal (container, context, -1, err);
       if (UNLIKELY (ret < 0))
         force_delete_container_status (context, def);
       return ret;
     }
 
++ // 有LIBCRUN_RUN_OPTIONS_PREFORK，走这里
   ret = pipe (container_ready_pipe);
   if (UNLIKELY (ret < 0))
     return crun_make_error (err, errno, "pipe");
   pipefd0 = container_ready_pipe[0];
   pipefd1 = container_ready_pipe[1];
 
-  ret = fork ();
++ ret = fork ();
   if (UNLIKELY (ret < 0))
     return crun_make_error (err, errno, "fork");
   if (ret)
@@ -425,7 +429,7 @@ libcrun_container_create (libcrun_context_t *context, libcrun_container_t *conta
 }
 ```
 
-- crun_command_create -> libcrun_container_create -> libcrun_container_run_internal
+- ***crun_command_create -> libcrun_container_create -> libcrun_container_run_internal***
 ```diff
 static int
 libcrun_container_run_internal (libcrun_container_t *container, libcrun_context_t *context, int container_ready_fd,
@@ -541,8 +545,8 @@ libcrun_container_run_internal (libcrun_container_t *container, libcrun_context_
   if (UNLIKELY (cgroup_mode < 0))
     return cgroup_mode;
 
-+ // 运行一个linux容器
-  pid = libcrun_run_linux_container (container, container_init, &container_args, &sync_socket, err);
++ // 运行一个linux容器，entrypoint=container_init
++ pid = libcrun_run_linux_container (container, container_init, &container_args, &sync_socket, err);
   if (UNLIKELY (pid < 0))
     return pid;
 
@@ -1455,6 +1459,390 @@ join_namespaces (runtime_spec_schema_config_schema *def, int *namespaces_to_join
             return crun_make_error (err, errno, "chdir(.)");
         }
     }
+  return 0;
+}
+```
+
+- ***container_init***是contaier的entrypont
+```diff
+/* Entrypoint to the container.  */
+static int
+container_init (void *args, char *notify_socket, int sync_socket, libcrun_error_t *err)
+{
+  struct container_entrypoint_s *entrypoint_args = args;
+  int ret;
+  runtime_spec_schema_config_schema *def = entrypoint_args->container->container_def;
+  cleanup_free const char *exec_path = NULL;
+  __attribute__ ((unused)) cleanup_free char *notify_socket_cleanup = notify_socket;
+  pid_t own_pid = 0;
+
+  entrypoint_args->sync_socket = sync_socket;
+
+  crun_set_output_handler (log_write_to_sync_socket, args, false);
+
+  /* sync receive own pid.  */
+  ret = TEMP_FAILURE_RETRY (read (sync_socket, &own_pid, sizeof (own_pid)));
+  if (UNLIKELY (ret != sizeof (own_pid)))
+    {
+      if (ret >= 0)
+        errno = 0;
+      return crun_make_error (err, errno, "read from sync socket");
+    }
+
++ ret = container_init_setup (args, own_pid, notify_socket, sync_socket, &exec_path, err);
+  if (UNLIKELY (ret < 0))
+    {
+      /* If it fails to write the error using the sync socket, then fallback
+         to stderr.  */
+      if (sync_socket_write_error (sync_socket, err) < 0)
+        return ret;
+
+      crun_error_release (err);
+      return ret;
+    }
+
+  entrypoint_args->sync_socket = -1;
+
+  ret = unblock_signals (err);
+  if (UNLIKELY (ret < 0))
+    return ret;
+
+  /* sync 4.  */
+  ret = sync_socket_send_sync (sync_socket, false, err);
+  if (UNLIKELY (ret < 0))
+    return ret;
+
+  close_and_reset (&sync_socket);
+
+  if (entrypoint_args->context->fifo_exec_wait_fd >= 0)
+    {
+      char buffer[1];
+      fd_set read_set;
+      cleanup_close int fd = entrypoint_args->context->fifo_exec_wait_fd;
+      entrypoint_args->context->fifo_exec_wait_fd = -1;
+
+      FD_ZERO (&read_set);
+      FD_SET (fd, &read_set);
+      do
+        {
+          ret = select (fd + 1, &read_set, NULL, NULL, NULL);
+          if (UNLIKELY (ret < 0))
+            return crun_make_error (err, errno, "select");
+
+          ret = TEMP_FAILURE_RETRY (read (fd, buffer, sizeof (buffer)));
+          if (UNLIKELY (ret < 0))
+            return crun_make_error (err, errno, "read from the exec fifo");
+      } while (ret == 0);
+
+      close_and_reset (&entrypoint_args->context->fifo_exec_wait_fd);
+    }
+
+  crun_set_output_handler (log_write_to_stderr, NULL, false);
+
+  if (def->process && def->process->no_new_privileges)
+    {
+      char **seccomp_flags = NULL;
+      size_t seccomp_flags_len = 0;
+      cleanup_free char *seccomp_fd_payload = NULL;
+      size_t seccomp_fd_payload_len = 0;
+
+      if (def->linux && def->linux->seccomp)
+        {
+          seccomp_flags = def->linux->seccomp->flags;
+          seccomp_flags_len = def->linux->seccomp->flags_len;
+        }
+
+      if (entrypoint_args->seccomp_receiver_fd >= 0)
+        {
+          ret = get_seccomp_receiver_fd_payload (entrypoint_args->container, "creating", own_pid, &seccomp_fd_payload, &seccomp_fd_payload_len, err);
+          if (UNLIKELY (ret < 0))
+            return ret;
+        }
+
+      ret = libcrun_apply_seccomp (entrypoint_args->seccomp_fd, entrypoint_args->seccomp_receiver_fd,
+                                   seccomp_fd_payload, seccomp_fd_payload_len, seccomp_flags,
+                                   seccomp_flags_len, err);
+      if (UNLIKELY (ret < 0))
+        return ret;
+      close_and_reset (&entrypoint_args->seccomp_fd);
+      close_and_reset (&entrypoint_args->seccomp_receiver_fd);
+    }
+
+  if (UNLIKELY (def->process == NULL))
+    return crun_make_error (err, 0, "block 'process' not found");
+
+  if (UNLIKELY (exec_path == NULL))
+    return crun_make_error (err, 0, "executable path not specified");
+
+  if (def->hooks && def->hooks->start_container_len)
+    {
+      libcrun_container_t *container = entrypoint_args->container;
+
+      ret = do_hooks (def, 0, container->context->id, false, NULL, "starting", (hook **) def->hooks->start_container,
+                      def->hooks->start_container_len, entrypoint_args->hooks_out_fd, entrypoint_args->hooks_err_fd,
+                      err);
+      if (UNLIKELY (ret != 0))
+        return ret;
+
+      /* Seek stdout/stderr to the end.  If the hooks were using the same files,
+         the container process overwrites what was previously written.  */
+      (void) lseek (1, 0, SEEK_END);
+      (void) lseek (2, 0, SEEK_END);
+    }
+
+  if (entrypoint_args->exec_func)
+    {
+      ret = entrypoint_args->exec_func (entrypoint_args->container, entrypoint_args->exec_func_arg, exec_path,
+                                        def->process->args);
+      _exit (ret);
+    }
+
+  TEMP_FAILURE_RETRY (execv (exec_path, def->process->args));
+
+  if (errno == ENOENT)
+    return crun_make_error (err, errno, "exec container process (missing dynamic library?) `%s`", exec_path);
+
+  return crun_make_error (err, errno, "exec container process `%s`", exec_path);
+}
+
+/* Initialize the environment where the container process runs.
+   It is used by the container init process.  */
+static int
+container_init_setup (void *args, pid_t own_pid, char *notify_socket, int sync_socket, const char **exec_path, libcrun_error_t *err)
+{
+  struct container_entrypoint_s *entrypoint_args = args;
+  libcrun_container_t *container = entrypoint_args->container;
+  int ret;
+  int has_terminal;
+  cleanup_close int console_socket = -1;
+  cleanup_close int console_socketpair = -1;
+  runtime_spec_schema_config_schema *def = container->container_def;
+  runtime_spec_schema_config_schema_process_capabilities *capabilities;
+  cleanup_free char *rootfs = NULL;
+  int no_new_privs;
+
+  ret = libcrun_configure_handler (args, err);
+  if (UNLIKELY (ret < 0))
+    return ret;
+
+  ret = initialize_security (def->process, err);
+  if (UNLIKELY (ret < 0))
+    return ret;
+
+  ret = libcrun_configure_network (container, err);
+  if (UNLIKELY (ret < 0))
+    return ret;
+
+  if (def->root && def->root->path)
+    {
+      rootfs = realpath (def->root->path, NULL);
+      if (UNLIKELY (rootfs == NULL))
+        {
+          /* If realpath failed for any reason, try the relative directory.  */
+          rootfs = xstrdup (def->root->path);
+        }
+    }
+
+  if (entrypoint_args->terminal_socketpair[0] >= 0)
+    {
+      close_and_reset (&entrypoint_args->terminal_socketpair[0]);
+      console_socketpair = entrypoint_args->terminal_socketpair[1];
+    }
+
+  /* sync 1.  */
+  ret = sync_socket_wait_sync (NULL, sync_socket, false, err);
+  if (UNLIKELY (ret < 0))
+    return ret;
+
+  has_terminal = container->container_def->process && container->container_def->process->terminal;
+  if (has_terminal && entrypoint_args->context->console_socket)
+    console_socket = entrypoint_args->console_socket_fd;
+
+  ret = libcrun_set_sysctl (container, err);
+  if (UNLIKELY (ret < 0))
+    return ret;
+
+  /* sync 2 and 3 are sent as part of libcrun_set_mounts.  */
+  ret = libcrun_set_mounts (container, rootfs, send_sync_cb, &sync_socket, err);
+  if (UNLIKELY (ret < 0))
+    return ret;
+
+#if HAVE_DLOPEN && HAVE_LIBKRUN
+  /* explicitly configure kvm device if binary is invoked as krun */
+  if (entrypoint_args->context->handler != NULL && (strcmp (entrypoint_args->context->handler, "krun") == 0))
+    {
+      ret = libcrun_create_kvm_device (container, err);
+      if (UNLIKELY (ret < 0))
+        return ret;
+    }
+#endif
+
+  if (def->hooks && def->hooks->create_container_len)
+    {
+      ret = do_hooks (def, 0, container->context->id, false, NULL, "created", (hook **) def->hooks->create_container,
+                      def->hooks->create_container_len, entrypoint_args->hooks_out_fd, entrypoint_args->hooks_err_fd,
+                      err);
+      if (UNLIKELY (ret != 0))
+        return ret;
+    }
+
+  if (def->process)
+    {
+      ret = libcrun_set_selinux_exec_label (def->process, err);
+      if (UNLIKELY (ret < 0))
+        return ret;
+
+      ret = libcrun_set_apparmor_profile (def->process, err);
+      if (UNLIKELY (ret < 0))
+        return ret;
+    }
+
+  ret = mark_for_close_fds_ge_than (entrypoint_args->context->preserve_fds + 3, err);
+  if (UNLIKELY (ret < 0))
+    crun_error_write_warning_and_release (entrypoint_args->context->output_handler_arg, &err);
+
+  if (rootfs)
+    {
+      ret = libcrun_do_pivot_root (container, entrypoint_args->context->no_pivot, rootfs, err);
+      if (UNLIKELY (ret < 0))
+        return ret;
+    }
+
+  ret = libcrun_reopen_dev_null (err);
+  if (UNLIKELY (ret < 0))
+    return ret;
+
+  if (clearenv ())
+    return crun_make_error (err, errno, "clearenv");
+
+  if (def->process)
+    {
+      size_t i;
+
+      for (i = 0; i < def->process->env_len; i++)
+        if (putenv (def->process->env[i]) < 0)
+          return crun_make_error (err, errno, "putenv `%s`", def->process->env[i]);
+    }
+
+  if (getenv ("HOME") == NULL)
+    {
+      ret = set_home_env (container->container_uid);
+      if (UNLIKELY (ret < 0 && errno != ENOTSUP))
+        {
+          setenv ("HOME", "/", 1);
+          libcrun_warning ("cannot detect HOME environment variable, setting default");
+        }
+    }
+
+  if (def->process && def->process->cwd)
+    if (UNLIKELY (chdir (def->process->cwd) < 0))
+      return crun_make_error (err, errno, "chdir");
+
+  if (def->process && def->process->args)
+    {
+      *exec_path = find_executable (def->process->args[0], def->process->cwd);
+      if (UNLIKELY (*exec_path == NULL))
+        {
+          if (errno == ENOENT)
+            return crun_make_error (err, errno, "executable file `%s` not found in $PATH", def->process->args[0]);
+
+          return crun_make_error (err, errno, "open executable");
+        }
+    }
+
+  ret = setsid ();
+  if (UNLIKELY (ret < 0))
+    return crun_make_error (err, errno, "setsid");
+
+  if (has_terminal)
+    {
+      cleanup_close int terminal_fd = -1;
+
+      fflush (stderr);
+
+      terminal_fd = libcrun_set_terminal (container, err);
+      if (UNLIKELY (terminal_fd < 0))
+        return terminal_fd;
+
+      if (console_socket >= 0)
+        {
+          ret = send_fd_to_socket (console_socket, terminal_fd, err);
+          if (UNLIKELY (ret < 0))
+            return ret;
+          close_and_reset (&console_socket);
+        }
+      else if (entrypoint_args->has_terminal_socket_pair && console_socketpair >= 0)
+        {
+          ret = send_fd_to_socket (console_socketpair, terminal_fd, err);
+          if (UNLIKELY (ret < 0))
+            return ret;
+
+          close_and_reset (&console_socketpair);
+        }
+    }
+
+  ret = libcrun_set_hostname (container, err);
+  if (UNLIKELY (ret < 0))
+    return ret;
+
+  if (container->container_def->linux && container->container_def->linux->personality)
+    {
+      ret = libcrun_set_personality (container->container_def->linux->personality, err);
+      if (UNLIKELY (ret < 0))
+        return ret;
+    }
+
+  if (def->process && def->process->user)
+    umask (def->process->user->umask_present ? def->process->user->umask : 0022);
+
+  if (def->process && ! def->process->no_new_privileges)
+    {
+      char **seccomp_flags = NULL;
+      size_t seccomp_flags_len = 0;
+      cleanup_free char *seccomp_fd_payload = NULL;
+      size_t seccomp_fd_payload_len = 0;
+
+      if (def->linux && def->linux->seccomp)
+        {
+          seccomp_flags = def->linux->seccomp->flags;
+          seccomp_flags_len = def->linux->seccomp->flags_len;
+        }
+
+      if (entrypoint_args->seccomp_receiver_fd >= 0)
+        {
+          ret = get_seccomp_receiver_fd_payload (container, "creating", own_pid, &seccomp_fd_payload, &seccomp_fd_payload_len, err);
+          if (UNLIKELY (ret < 0))
+            return ret;
+        }
+
+      ret = libcrun_apply_seccomp (entrypoint_args->seccomp_fd, entrypoint_args->seccomp_receiver_fd,
+                                   seccomp_fd_payload, seccomp_fd_payload_len, seccomp_flags, seccomp_flags_len, err);
+      if (UNLIKELY (ret < 0))
+        return ret;
+
+      close_and_reset (&entrypoint_args->seccomp_fd);
+      close_and_reset (&entrypoint_args->seccomp_receiver_fd);
+    }
+
+  if (entrypoint_args->container->use_intermediate_userns)
+    {
+      ret = libcrun_create_final_userns (entrypoint_args->container, err);
+      if (UNLIKELY (ret < 0))
+        return ret;
+    }
+
+  capabilities = def->process ? def->process->capabilities : NULL;
+  no_new_privs = def->process ? def->process->no_new_privileges : 1;
+  ret = libcrun_set_caps (capabilities, container->container_uid, container->container_gid, no_new_privs, err);
+  if (UNLIKELY (ret < 0))
+    return ret;
+
+  if (notify_socket)
+    {
+      if (putenv (notify_socket) < 0)
+        return crun_make_error (err, errno, "putenv `%s`", notify_socket);
+    }
+
   return 0;
 }
 ```
