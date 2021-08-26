@@ -541,7 +541,7 @@ libcrun_container_run_internal (libcrun_container_t *container, libcrun_context_
   if (UNLIKELY (cgroup_mode < 0))
     return cgroup_mode;
 
-+ // 运行一个linux容器，容器运行后，调用container_init函数初始化
++ // 运行一个linux容器
   pid = libcrun_run_linux_container (container, container_init, &container_args, &sync_socket, err);
   if (UNLIKELY (pid < 0))
     return pid;
@@ -755,7 +755,7 @@ libcrun_run_linux_container (libcrun_container_t *container, container_entrypoin
   pid_t pid;
   size_t i;
   int ret;
-+ // 初始化命名空间,打开命名空间fd
++ // 初始化namespace
   ret = configure_init_status (&init_status, container, err);
   if (UNLIKELY (ret < 0))
     return ret;
