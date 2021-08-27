@@ -1,6 +1,6 @@
 # CRUN运行容器
-> crun是一个高效且低内存需求的OCI runtime实现。它是完全用c语言编写的。<br>
-> crun实现满足 OCI Container Runtime specifications (https://github.com/opencontainers/runtime-spec).
+> crun是一个基于C语言编写的，高效且低内存需求的OCI runtime实现，<br>
+> 符合OCI Container Runtime specifications (https://github.com/opencontainers/runtime-spec)。
 
 ### 主程序
 ```diff
@@ -180,7 +180,7 @@ crun_command_create (struct crun_global_arguments *global_args, int argc, char *
   if (getenv ("LISTEN_FDS"))
     crun_context.preserve_fds += strtoll (getenv ("LISTEN_FDS"), NULL, 10);
 
-- // 根据container对象和运行的contex，创建容器
+- // 根据container对象和运行contex，创建容器
 +  return libcrun_container_create (&crun_context, container, 0, err);
 }
 ```
@@ -275,7 +275,7 @@ struct libcrun_container_s
 - typedef struct libcrun_container_s libcrun_container_t;
 
 + // oci runtime spec的schema定义
-typedef struct {
+- typedef struct {
     char *oci_version;
 
     runtime_spec_schema_config_schema_hooks *hooks;
@@ -356,7 +356,12 @@ make_container (runtime_spec_schema_config_schema *container_def)
 }
 ```
 
-- 创建容器***crun_command_create -> libcrun_container_create***
+### 创建容器
+```diff
+- 根据options里是否设置LIBCRUN_RUN_OPTIONS_PREFORK有两条途径，差别在host端多fork了一次。
+- 目前只有python-crun实现里用到了LIBCRUN_RUN_OPTIONS_PREFORK
+```
+- ***crun_command_create -> libcrun_container_create***
 ```diff
 int
 libcrun_container_create (libcrun_context_t *context, libcrun_container_t *container, unsigned int options,
@@ -396,7 +401,7 @@ libcrun_container_create (libcrun_context_t *context, libcrun_container_t *conta
   context->fifo_exec_wait_fd = exec_fifo_fd;
   exec_fifo_fd = -1;
 
-- // 按照是否LIBCRUN_RUN_OPTIONS_PREFORK有两种路径
+
   if ((options & LIBCRUN_RUN_OPTIONS_PREFORK) == 0)
 - // 没有LIBCRUN_RUN_OPTIONS_PREFORK，走这里  
     {
@@ -417,7 +422,7 @@ libcrun_container_create (libcrun_context_t *context, libcrun_container_t *conta
   pipefd0 = container_ready_pipe[0];
   pipefd1 = container_ready_pipe[1];
 
-+ ret = fork ();
+  ret = fork ();
   if (UNLIKELY (ret < 0))
     return crun_make_error (err, errno, "fork");
   if (ret)
@@ -465,7 +470,10 @@ libcrun_container_create (libcrun_context_t *context, libcrun_container_t *conta
 }
 ```
 
-- 创建容器，通过***crun_command_create -> libcrun_container_create -> libcrun_container_run_internal***
+- ***crun_command_create -> libcrun_container_create -> libcrun_container_run_internal***
+```diff
+- 从这里才是真正开始create容器。为了正确设置namespace（有些是unshare，有些是join），需要多次fork和进程间同步，过程比较复杂
+```
 ```diff
 static int
 libcrun_container_run_internal (libcrun_container_t *container, libcrun_context_t *context, int container_ready_fd,
@@ -581,7 +589,7 @@ libcrun_container_run_internal (libcrun_container_t *container, libcrun_context_
   if (UNLIKELY (cgroup_mode < 0))
     return cgroup_mode;
 
-+ // 运行一个linux容器，entrypoint=container_init
+- // 运行一个linux容器，注意参数entrypoint=container_init
 + pid = libcrun_run_linux_container (container, container_init, &container_args, &sync_socket, err);
   if (UNLIKELY (pid < 0))
     return pid;
@@ -776,8 +784,11 @@ libcrun_container_run_internal (libcrun_container_t *container, libcrun_context_
 ```
 
 - [libcrun_run_linux_container](https://github.com/containers/crun/blob/main/src/libcrun/linux.c)
-> linux container的初始化总体分为host端和container端，container端是host端第一次fork出来 <br>
-> container端里面为了正确设置namespace还会fork
+```diff
+- linux container的初始化总体分为host端和container端，container端是host端fork出来，是父子关系<br>
+- container端里面为了正确设置namespace还会fork
+```
+
 ```diff
 pid_t
 libcrun_run_linux_container (libcrun_container_t *container, container_entrypoint_t entrypoint, void *args,
@@ -1630,14 +1641,16 @@ container_init (void *args, char *notify_socket, int sync_socket, libcrun_error_
       (void) lseek (2, 0, SEEK_END);
     }
 
-  if (entrypoint_args->exec_func)
+- // 如果定义了其它exec执行方式，就用该方式执行entrypoint
++ if (entrypoint_args->exec_func)
     {
       ret = entrypoint_args->exec_func (entrypoint_args->container, entrypoint_args->exec_func_arg, exec_path,
                                         def->process->args);
       _exit (ret);
     }
 
-  TEMP_FAILURE_RETRY (execv (exec_path, def->process->args));
+- // 默认用execv来执行entrypoint
++ TEMP_FAILURE_RETRY (execv (exec_path, def->process->args));
 
   if (errno == ENOENT)
     return crun_make_error (err, errno, "exec container process (missing dynamic library?) `%s`", exec_path);
