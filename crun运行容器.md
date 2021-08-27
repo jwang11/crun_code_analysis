@@ -215,8 +215,8 @@ struct libcrun_context_s
   void *exec_func_arg;
 };
 
-+ // 定义libcrun_context_t
-typedef struct libcrun_context_s libcrun_context_t;
+- // 定义libcrun_context_t
++ typedef struct libcrun_context_s libcrun_context_t;
 
 int
 init_libcrun_context (libcrun_context_t *con, const char *id, struct crun_global_arguments *glob, libcrun_error_t *err)
@@ -272,7 +272,7 @@ struct libcrun_container_s
 };
 
 + // 定义libcrun_container_t
-typedef struct libcrun_container_s libcrun_container_t;
+- typedef struct libcrun_container_s libcrun_container_t;
 
 + // oci runtime spec的schema定义
 typedef struct {
@@ -309,13 +309,13 @@ libcrun_container_load_from_file (const char *path, libcrun_error_t *err)
 {
   runtime_spec_schema_config_schema *container_def;
   cleanup_free char *oci_error = NULL;
-+  container_def = runtime_spec_schema_config_schema_parse_file (path, NULL, &oci_error);
+  container_def = runtime_spec_schema_config_schema_parse_file (path, NULL, &oci_error);
   if (container_def == NULL)
     {
       crun_make_error (err, 0, "load `%s`: %s", path, oci_error);
       return NULL;
     }
-+  return make_container (container_def);
++ return make_container (container_def);
 }
 
 runtime_spec_schema_config_schema *
@@ -369,8 +369,8 @@ libcrun_container_create (libcrun_context_t *context, libcrun_container_t *conta
   cleanup_close int pipefd1 = -1;
   cleanup_close int exec_fifo_fd = -1;
   
-+  //为1表示，crun create 指令不阻塞，直接返回（只有crun run这个detach是0）
-  context->detach = 1;
++ //为1表示，crun create 指令不阻塞，直接返回（只有crun run这个detach是0）
+- context->detach = 1;
 
   container->context = context;
 
@@ -388,29 +388,29 @@ libcrun_container_create (libcrun_context_t *context, libcrun_container_t *conta
   if (UNLIKELY (ret < 0))
     return ret;
 
-+ // 创建执行等待execfifo，在容器create完成后阻塞进程，等待命令执行
-  exec_fifo_fd = libcrun_status_create_exec_fifo (context->state_root, context->id, err);
+- // 创建执行等待execfifo，在容器create完成后阻塞进程，等待命令执行
++ exec_fifo_fd = libcrun_status_create_exec_fifo (context->state_root, context->id, err);
   if (UNLIKELY (exec_fifo_fd < 0))
     return exec_fifo_fd;
 
   context->fifo_exec_wait_fd = exec_fifo_fd;
   exec_fifo_fd = -1;
 
-+ // 按照是否LIBCRUN_RUN_OPTIONS_PREFORK有两种路径
+- // 按照是否LIBCRUN_RUN_OPTIONS_PREFORK有两种路径
   if ((options & LIBCRUN_RUN_OPTIONS_PREFORK) == 0)
-+ // 没有LIBCRUN_RUN_OPTIONS_PREFORK，走这里  
+- // 没有LIBCRUN_RUN_OPTIONS_PREFORK，走这里  
     {
       ret = libcrun_copy_config_file (context->id, context->state_root, context->config_file, context->config_file_content, err);
       if (UNLIKELY (ret < 0))
         return ret;
-+     // container_ready_fd=-1
+-     // 这里参数container_ready_fd=-1
 +     ret = libcrun_container_run_internal (container, context, -1, err);
       if (UNLIKELY (ret < 0))
         force_delete_container_status (context, def);
       return ret;
     }
 
-+ // 有LIBCRUN_RUN_OPTIONS_PREFORK，走这里
+- // 有LIBCRUN_RUN_OPTIONS_PREFORK，走这里
   ret = pipe (container_ready_pipe);
   if (UNLIKELY (ret < 0))
     return crun_make_error (err, errno, "pipe");
@@ -465,7 +465,7 @@ libcrun_container_create (libcrun_context_t *context, libcrun_container_t *conta
 }
 ```
 
-- ***crun_command_create -> libcrun_container_create -> libcrun_container_run_internal***
+- 创建容器，通过***crun_command_create -> libcrun_container_create -> libcrun_container_run_internal***
 ```diff
 static int
 libcrun_container_run_internal (libcrun_container_t *container, libcrun_context_t *context, int container_ready_fd,
