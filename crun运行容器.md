@@ -141,7 +141,7 @@ crun_command_create (struct crun_global_arguments *global_args, int argc, char *
   if (getenv ("LISTEN_FDS"))
     crun_context.preserve_fds += strtoll (getenv ("LISTEN_FDS"), NULL, 10);
 
-+ // // 按照spec和上下文，创建一个容器
++ // 按照container对象和运行的contex，创建容器
   return libcrun_container_create (&crun_context, container, 0, err);
 }
 ```
