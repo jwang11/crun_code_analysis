@@ -36,7 +36,7 @@ COMMANDS:
   -V, --version              Print program version
 ```
 
-- [命令入口](https://github.com/containers/crun/blob/main/src/crun.c)
+- [主命令入口](https://github.com/containers/crun/blob/main/src/crun.c)
 ```diff
 struct commands_s
 {
@@ -97,7 +97,7 @@ main (int argc, char **argv)
 }
 ```
 
-### ***crun_command_create***
+### Creat子命令
 ```diff
 - 对应执行命令行$crun create ID
  Usage: create [OPTION...] create [OPTION]... CONTAINER
@@ -116,6 +116,7 @@ main (int argc, char **argv)
       --usage                Give a short usage message
   -V, --version              Print program version
 ```
+- Create子命令入口***crun_command_create***
 ```diff
 int
 crun_command_create (struct crun_global_arguments *global_args, int argc, char **argv, libcrun_error_t *err)
