@@ -855,7 +855,7 @@ libcrun_run_linux_container (libcrun_container_t *container, container_entrypoin
   init_status.delayed_userns_create
       = (init_status.all_namespaces & CLONE_NEWUSER) && init_status.userns_index < 0 && init_status.fd_len > 0;
 
-+ // 对需要特殊处理的namespace做标注 - NEWIPC，NEWPID和NEWTIME
+- // 对需要特殊处理的namespace做标注 - NEWIPC，NEWPID和NEWTIME
   /* Check if special handling is required to join the namespaces.  */
   for (i = 0; i < init_status.fd_len; i++)
     {
@@ -892,7 +892,7 @@ libcrun_run_linux_container (libcrun_container_t *container, container_entrypoin
   /* Before attempting any setns() or unshare(), a clone() is required to not touch the caller context
      that can be used later on for running hooks.  */
 
-+ //如果要新的NEWUSER namespace，第一次fork只处理NEWUSER；如果是join提供path的NEWUSER，处理除了(CLONE_NEWTIME | CLONE_NEWCGROUP)之外的namespace
+- //如果要新的NEWUSER namespace，第一次fork只处理NEWUSER；如果是join提供path的NEWUSER，处理除了(CLONE_NEWTIME | CLONE_NEWCGROUP)之外的namespace
   if ((init_status.namespaces_to_unshare & CLONE_NEWUSER) && init_status.fd_len == 0)
     {
       /* If a user namespace must be created and there are no other namespaces to join, create the userns alone.  */
@@ -904,21 +904,21 @@ libcrun_run_linux_container (libcrun_container_t *container, container_entrypoin
       first_clone_args = init_status.namespaces_to_unshare & ~(CLONE_NEWTIME | CLONE_NEWCGROUP);
     }
     
-+ // 第一次fork
+- // 第一次fork
   pid = syscall_clone (first_clone_args | SIGCHLD, NULL);
   if (UNLIKELY (pid < 0))
     return crun_make_error (err, errno, "clone");
 
   init_status.namespaces_to_unshare &= ~first_clone_args;
 
-+ // 检查是否还有其它namespace需要单独fork，例如(CLONE_NEWPID | CLONE_NEWTIME)
+- // 检查是否还有其它namespace需要单独fork，例如(CLONE_NEWPID | CLONE_NEWTIME)
   /* Check if there are still namespaces that require a fork().  */
   if (init_status.namespaces_to_unshare & (CLONE_NEWPID | CLONE_NEWTIME))
     init_status.must_fork = true;
 
   if (pid)
     {
-+     // host端    
+-     // host端    
       cleanup_pid pid_t pid_to_clean = pid;
 
       ret = save_external_descriptors (container, pid, err);
@@ -964,7 +964,7 @@ libcrun_run_linux_container (libcrun_container_t *container, container_entrypoin
             return ret;
         }
 
-+     // set NEWUSER namespace
+-     // set NEWUSER namespace
       if ((init_status.all_namespaces & CLONE_NEWUSER) && init_status.userns_index < 0)
         {
           ret = libcrun_set_usernamespace (container, pid, err);
@@ -976,7 +976,7 @@ libcrun_run_linux_container (libcrun_container_t *container, container_entrypoin
             return crun_make_error (err, errno, "write to sync socket");
         }
 
-+     // 检查是否需要再次fork
+-     // 检查是否需要再次fork
       if (init_status.must_fork)
         {
           pid_t grandchild = 0;
@@ -985,7 +985,7 @@ libcrun_run_linux_container (libcrun_container_t *container, container_entrypoin
           if (UNLIKELY (ret < 0))
             return ret;
 
-+         // 得到grandchild的PID
+-         // 得到grandchild的PID
           ret = TEMP_FAILURE_RETRY (read (sync_socket_host, &grandchild, sizeof (grandchild)));
           if (UNLIKELY (ret < 0))
             return crun_make_error (err, errno, "read pid from sync socket");
@@ -994,7 +994,7 @@ libcrun_run_linux_container (libcrun_container_t *container, container_entrypoin
           if (UNLIKELY (ret < 0))
             return ret;
 
-+         // 等待new_pid子进程退出
+-         // 等待new_pid子进程退出
           /* Cleanup the first process.  */
           waitpid (pid, NULL, 0);
 
@@ -1044,7 +1044,7 @@ libcrun_run_linux_container (libcrun_container_t *container, container_entrypoin
   if (container->context->notify_socket)
     xasprintf (&notify_socket_env, "NOTIFY_SOCKET=%s/notify", container->context->notify_socket);
 
-+ // 执行entrypont的命令
+- // 执行entrypont的命令
   entrypoint (args, notify_socket_env, sync_socket_container, err);
 
   /* ENTRYPOINT returns only on an error, fallback here: */
@@ -1120,8 +1120,8 @@ configure_init_status (struct init_status_s *ns, libcrun_container_t *container,
   if (container->host_uid && (ns->all_namespaces & CLONE_NEWUSER) == 0)
     {
       libcrun_warning ("non root user need to have an 'user' namespace");
- +    ns->all_namespaces |= CLONE_NEWUSER;
- +    ns->namespaces_to_unshare |= CLONE_NEWUSER;
++     ns->all_namespaces |= CLONE_NEWUSER;
++     ns->namespaces_to_unshare |= CLONE_NEWUSER;
     }
 
   return 0;
@@ -1283,7 +1283,7 @@ init_container (libcrun_container_t *container, int sync_socket_container, struc
         }
     }
 
-+ // 需要再fork一次
+- // 需要再fork一次
   if (init_status->must_fork)
     {
       /* A PID and a time namespace are joined when the new process is created.  */
@@ -1291,7 +1291,7 @@ init_container (libcrun_container_t *container, int sync_socket_container, struc
       if (UNLIKELY (pid_container < 0))
         return crun_make_error (err, errno, "cannot fork");
 
-+     // 把grand child的PID发给host端，这才是最后的container_pid
+-    // 把grand child的PID发给host端，这才是最后的container_pid
       /* Report back the new PID.  */
       if (pid_container)
         {
@@ -1323,7 +1323,8 @@ init_container (libcrun_container_t *container, int sync_socket_container, struc
 ```
 
 - ***libcrun_run_linux_container -> libcrun_set_usernamespace***
-> 生成uidmap和gidmap文件
+```diff
+- 成uidmap和gidmap文件
 ```
 int
 libcrun_set_usernamespace (libcrun_container_t *container, pid_t pid, libcrun_error_t *err)
