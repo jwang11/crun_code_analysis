@@ -184,8 +184,7 @@ crun_command_create (struct crun_global_arguments *global_args, int argc, char *
   return libcrun_container_create (&crun_context, container, 0, err);
 }
 ```
-
-- crun_command_create -> init_libcrun_context
+> crun_command_create -> init_libcrun_context
 ```diff
 struct libcrun_context_s
 {
@@ -252,7 +251,7 @@ init_libcrun_context (libcrun_context_t *con, const char *id, struct crun_global
 }
 ```
 
-- crun_command_create -> libcrun_container_load_from_file
+> crun_command_create -> libcrun_container_load_from_file
 ```diff
 + //container的结构定义，包含了schema和context
 struct libcrun_container_s
@@ -357,8 +356,7 @@ make_container (runtime_spec_schema_config_schema *container_def)
 }
 ```
 
-### 创建容器
-- ***crun_command_create -> libcrun_container_create***
+- 创建容器***crun_command_create -> libcrun_container_create***
 ```diff
 int
 libcrun_container_create (libcrun_context_t *context, libcrun_container_t *container, unsigned int options,
