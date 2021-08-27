@@ -2,8 +2,39 @@
 > crun是一个高效且低内存需求的OCI runtime实现。它是完全用c语言编写的。<br>
 > crun实现满足 OCI Container Runtime specifications (https://github.com/opencontainers/runtime-spec).
 
-### 代码分析
-- [入口](https://github.com/containers/crun/blob/main/src/crun.c)
+### 入口代码
+```
+- [crun](https://github.com/containers/crun/blob/main/src/crun.c)是标准的命令+子命令+options+args的结构
+Usage: crun [OPTION...] COMMAND [OPTION...]
+
+COMMANDS:
+        checkpoint  - checkpoint a container
+        create      - create a container
+        delete      - remove definition for a container
+        exec        - exec a command in a running container
+        list        - list known containers
+        kill        - send a signal to the container init process
+        ps          - show the processes in the container
+        restore     - restore a container
+        run         - run a container
+        spec        - generate a configuration file
+        start       - start a container
+        state       - output the state of a container
+        pause       - pause all the processes in the container
+        resume      - unpause the processes in the container
+        update      - update container resource constraints
+
+      --cgroup-manager=MANAGER   cgroup manager
+      --debug                produce verbose output
+      --log=FILE
+      --log-format=FORMAT
+      --root=DIR
+      --rootless=VALUE
+      --systemd-cgroup       use systemd cgroups
+  -?, --help                 Give this help list
+      --usage                Give a short usage message
+  -V, --version              Print program version
+```
 ```diff
 struct commands_s
 {
@@ -64,7 +95,25 @@ main (int argc, char **argv)
 }
 ```
 
-- ***crun_command_create****
+### ***crun_command_create***
+```diff
+- 对应执行命令行$crun create ID
+- Usage: create [OPTION...] create [OPTION]... CONTAINER
+- OCI runtime
+
+-  -b, --bundle=DIR           container bundle (default ".")
+-      --console-socket=SOCK  path to a socket that will receive the ptmx end of
+                             the tty
+-  -f, --config=FILE          override the config file name
+-      --no-new-keyring       keep the same session key
+-      --no-pivot             do not use pivot_root
+-      --no-subreaper         do not create a subreaper process
+-      --pid-file=FILE        where to write the PID of the container
+-      --preserve-fds=N       pass additional FDs to the container
+-  -?, --help                 Give this help list
+-      --usage                Give a short usage message
+-  -V, --version              Print program version
+```
 ```diff
 static struct argp_option options[]
     = { { "bundle", 'b', "DIR", 0, "container bundle (default \".\")", 0 },
@@ -109,7 +158,6 @@ crun_command_create (struct crun_global_arguments *global_args, int argc, char *
         }
     }
 
-+ // bundle路径必须是绝对路径
   /* Make sure the bundle is an absolute path.  */
   if (bundle == NULL)
     bundle = bundle_cleanup = getcwd (NULL, 0);
@@ -127,29 +175,28 @@ crun_command_create (struct crun_global_arguments *global_args, int argc, char *
         libcrun_fail_with_error (errno, "chdir `%s` failed", bundle);
     }
 
-+  // 根据命令行参数初始化上线文
-+  ret = init_libcrun_context (&crun_context, argv[first_arg], global_args, err);
++ // 根据命令行参数初始化上线文，包括state_root路径，cgroup管理器，fifo_exec等
++ ret = init_libcrun_context (&crun_context, argv[first_arg], global_args, err);
   if (UNLIKELY (ret < 0))
     return ret;
 
-+  // 根据oci规范生成container对象
-+  container = libcrun_container_load_from_file (config_file, err);
++ // 根据oci规范生成container对象。
++ //解析config.json，转变为runtime_spec_schema_config_schema对象，放入container->container_def，返回container
++ container = libcrun_container_load_from_file (config_file, err);
   if (container == NULL)
     libcrun_fail_with_error (0, "error loading config.json");
 
-  crun_context.bundle = bundle;
++ // 指定bundle的绝对路径
++ crun_context.bundle = bundle;
   if (getenv ("LISTEN_FDS"))
     crun_context.preserve_fds += strtoll (getenv ("LISTEN_FDS"), NULL, 10);
 
-+ // 按照container对象和运行的contex，创建容器
++ // 根据container对象和运行的contex，创建容器
   return libcrun_container_create (&crun_context, container, 0, err);
 }
 ```
 
-- ***crun_command_create -> init_libcrun_context***
-```diff
-- 初始化执行的上下文信息，包括state_root路径，cgroup管理器，fifo_exec等
-```
+- crun_command_create -> init_libcrun_context
 ```diff
 struct libcrun_context_s
 {
@@ -216,8 +263,7 @@ init_libcrun_context (libcrun_context_t *con, const char *id, struct crun_global
 }
 ```
 
-- ***crun_command_create -> libcrun_container_load_from_file***
-> 解析config.json，照oci spec规范load进runtime_spec_schema_config_schema(container->container_def)，返回libcrun_container_t结构
+- crun_command_create -> libcrun_container_load_from_file
 ```diff
 + //container的结构定义，包含了schema和context
 struct libcrun_container_s
@@ -239,7 +285,6 @@ struct libcrun_container_s
 
 + // 定义libcrun_container_t
 typedef struct libcrun_container_s libcrun_container_t;
-
 
 + // oci runtime spec的schema定义
 typedef struct {
@@ -276,13 +321,13 @@ libcrun_container_load_from_file (const char *path, libcrun_error_t *err)
 {
   runtime_spec_schema_config_schema *container_def;
   cleanup_free char *oci_error = NULL;
-  container_def = runtime_spec_schema_config_schema_parse_file (path, NULL, &oci_error);
++  container_def = runtime_spec_schema_config_schema_parse_file (path, NULL, &oci_error);
   if (container_def == NULL)
     {
       crun_make_error (err, 0, "load `%s`: %s", path, oci_error);
       return NULL;
     }
-  return make_container (container_def);
++  return make_container (container_def);
 }
 
 runtime_spec_schema_config_schema *
