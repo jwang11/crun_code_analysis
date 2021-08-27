@@ -2,9 +2,9 @@
 > crun是一个高效且低内存需求的OCI runtime实现。它是完全用c语言编写的。<br>
 > crun实现满足 OCI Container Runtime specifications (https://github.com/opencontainers/runtime-spec).
 
-### 入口代码
+### 主程序
 ```diff
-- [crun](https://github.com/containers/crun/blob/main/src/crun.c)是标准的命令+子命令+options+args的结构
+- crun是标准的 命令 + global_opts + 子命令 + opts + args的结构
 Usage: crun [OPTION...] COMMAND [OPTION...]
 
 COMMANDS:
@@ -35,6 +35,8 @@ COMMANDS:
       --usage                Give a short usage message
   -V, --version              Print program version
 ```
+
+- [命令入口](https://github.com/containers/crun/blob/main/src/crun.c)
 ```diff
 struct commands_s
 {
@@ -98,21 +100,21 @@ main (int argc, char **argv)
 ### ***crun_command_create***
 ```diff
 - 对应执行命令行$crun create ID
-- Usage: create [OPTION...] create [OPTION]... CONTAINER
-- OCI runtime
+ Usage: create [OPTION...] create [OPTION]... CONTAINER
+ OCI runtime
 
--  -b, --bundle=DIR           container bundle (default ".")
--      --console-socket=SOCK  path to a socket that will receive the ptmx end of
+  -b, --bundle=DIR           container bundle (default ".")
+      --console-socket=SOCK  path to a socket that will receive the ptmx end of
                              the tty
--  -f, --config=FILE          override the config file name
--      --no-new-keyring       keep the same session key
--      --no-pivot             do not use pivot_root
--      --no-subreaper         do not create a subreaper process
--      --pid-file=FILE        where to write the PID of the container
--      --preserve-fds=N       pass additional FDs to the container
--  -?, --help                 Give this help list
--      --usage                Give a short usage message
--  -V, --version              Print program version
+  -f, --config=FILE          override the config file name
+      --no-new-keyring       keep the same session key
+      --no-pivot             do not use pivot_root
+      --no-subreaper         do not create a subreaper process
+      --pid-file=FILE        where to write the PID of the container
+      --preserve-fds=N       pass additional FDs to the container
+  -?, --help                 Give this help list
+      --usage                Give a short usage message
+  -V, --version              Print program version
 ```
 ```diff
 int
