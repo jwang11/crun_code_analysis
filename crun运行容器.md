@@ -148,6 +148,9 @@ crun_command_create (struct crun_global_arguments *global_args, int argc, char *
 
 - ***crun_command_create -> init_libcrun_context***
 ```diff
+- 初始化执行的上下文信息，包括state_root路径，cgroup管理器，fifo_exec等
+```
+```diff
 struct libcrun_context_s
 {
   const char *state_root;
