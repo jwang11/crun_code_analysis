@@ -3,7 +3,7 @@
 > crun实现满足 OCI Container Runtime specifications (https://github.com/opencontainers/runtime-spec).
 
 ### 入口代码
-```
+```diff
 - [crun](https://github.com/containers/crun/blob/main/src/crun.c)是标准的命令+子命令+options+args的结构
 Usage: crun [OPTION...] COMMAND [OPTION...]
 
@@ -115,20 +115,6 @@ main (int argc, char **argv)
 -  -V, --version              Print program version
 ```
 ```diff
-static struct argp_option options[]
-    = { { "bundle", 'b', "DIR", 0, "container bundle (default \".\")", 0 },
-        { "config", 'f', "FILE", 0, "override the config file name", 0 },
-        { "console-socket", OPTION_CONSOLE_SOCKET, "SOCK", 0,
-          "path to a socket that will receive the ptmx end of the tty", 0 },
-        { "preserve-fds", OPTION_PRESERVE_FDS, "N", 0, "pass additional FDs to the container", 0 },
-        { "no-pivot", OPTION_NO_PIVOT, 0, 0, "do not use pivot_root", 0 },
-        { "pid-file", OPTION_PID_FILE, "FILE", 0, "where to write the PID of the container", 0 },
-        { "no-subreaper", OPTION_NO_SUBREAPER, 0, 0, "do not create a subreaper process", 0 },
-        { "no-new-keyring", OPTION_NO_NEW_KEYRING, 0, 0, "keep the same session key", 0 },
-        {
-            0,
-        } };
-
 int
 crun_command_create (struct crun_global_arguments *global_args, int argc, char **argv, libcrun_error_t *err)
 {
