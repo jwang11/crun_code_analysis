@@ -89,8 +89,8 @@ main (int argc, char **argv)
   if (arguments.debug)
     libcrun_set_verbosity (LIBCRUN_VERBOSITY_WARNING);
 
-+ // 执行对应的操作函数
-  ret = command->handler (&arguments, argc - first_argument, argv + first_argument, &err);
+- // 执行对应的操作函数
++  ret = command->handler (&arguments, argc - first_argument, argv + first_argument, &err);
   if (ret && err)
     libcrun_fail_with_error (err->status, "%s", err->msg);
   return ret;
@@ -164,24 +164,24 @@ crun_command_create (struct crun_global_arguments *global_args, int argc, char *
         libcrun_fail_with_error (errno, "chdir `%s` failed", bundle);
     }
 
-+ // 根据命令行参数初始化上线文，包括state_root路径，cgroup管理器，fifo_exec等
+- // 根据命令行参数初始化上线文，包括state_root路径，cgroup管理器，fifo_exec等
 + ret = init_libcrun_context (&crun_context, argv[first_arg], global_args, err);
   if (UNLIKELY (ret < 0))
     return ret;
 
-+ // 根据oci规范生成container对象。
-+ //解析config.json，转变为runtime_spec_schema_config_schema对象，放入container->container_def，返回container
+- // 根据oci规范生成container对象。
+- //解析config.json，转变为runtime_spec_schema_config_schema对象，放入container->container_def，返回container
 + container = libcrun_container_load_from_file (config_file, err);
   if (container == NULL)
     libcrun_fail_with_error (0, "error loading config.json");
 
-+ // 指定bundle的绝对路径
+- // 指定bundle的绝对路径
 + crun_context.bundle = bundle;
   if (getenv ("LISTEN_FDS"))
     crun_context.preserve_fds += strtoll (getenv ("LISTEN_FDS"), NULL, 10);
 
-+ // 根据container对象和运行的contex，创建容器
-  return libcrun_container_create (&crun_context, container, 0, err);
+- // 根据container对象和运行的contex，创建容器
++  return libcrun_container_create (&crun_context, container, 0, err);
 }
 ```
 > crun_command_create -> init_libcrun_context
