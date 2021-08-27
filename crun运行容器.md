@@ -253,7 +253,7 @@ init_libcrun_context (libcrun_context_t *con, const char *id, struct crun_global
 
 > crun_command_create -> libcrun_container_load_from_file
 ```diff
-+ //container的结构定义，包含了schema和context
+- //container的结构定义，包含了schema和context
 struct libcrun_container_s
 {
   /* Container parsed from the runtime json file.  */
@@ -271,11 +271,11 @@ struct libcrun_container_s
   struct libcrun_context_s *context;
 };
 
-+ // 定义libcrun_container_t
-- typedef struct libcrun_container_s libcrun_container_t;
+- // 定义libcrun_container_t
++ typedef struct libcrun_container_s libcrun_container_t;
 
-+ // oci runtime spec的schema定义
-- typedef struct {
+- // oci runtime spec的schema定义
++ typedef struct {
     char *oci_version;
 
     runtime_spec_schema_config_schema_hooks *hooks;
@@ -346,7 +346,7 @@ make_container (runtime_spec_schema_config_schema *container_def)
   libcrun_container_t *container = xmalloc0 (sizeof (*container));
   container->container_def = container_def;
 
-+ // 设置host的uid和gid
+- // 设置host的uid和gid
   container->host_uid = geteuid ();
   container->host_gid = getegid ();
 
@@ -472,7 +472,7 @@ libcrun_container_create (libcrun_context_t *context, libcrun_container_t *conta
 
 - ***crun_command_create -> libcrun_container_create -> libcrun_container_run_internal***
 ```diff
-- 从这里才是真正开始create容器。为了正确设置namespace（有些是unshare，有些是join），需要多次fork和进程间同步，过程比较复杂
+- 从这里才是真正开始create容器。为了正确设置namespace（有些unshare，有些join），需要多次fork和进程间同步，过程比较复杂
 ```
 ```diff
 static int
@@ -546,6 +546,7 @@ libcrun_container_run_internal (libcrun_container_t *container, libcrun_context_
         return ret;
     }
 
+- // 如果没有console_socket而且不是detach模式，就创建一对socket_pair做console输出
   if (def->process && def->process->terminal && ! detach && context->console_socket == NULL)
     {
       container_args.has_terminal_socket_pair = 1;
@@ -589,7 +590,7 @@ libcrun_container_run_internal (libcrun_container_t *container, libcrun_context_
   if (UNLIKELY (cgroup_mode < 0))
     return cgroup_mode;
 
-- // 运行一个linux容器，注意参数entrypoint=container_init
+- // 运行一个linux容器，注意参数entrypoint=container_init，返回host pid以及sync_socket
 + pid = libcrun_run_linux_container (container, container_init, &container_args, &sync_socket, err);
   if (UNLIKELY (pid < 0))
     return pid;
@@ -807,8 +808,8 @@ libcrun_run_linux_container (libcrun_container_t *container, container_entrypoin
   pid_t pid;
   size_t i;
   int ret;
-+ // 初始化namespace
-  ret = configure_init_status (&init_status, container, err);
+- // 初始化namespace
++ ret = configure_init_status (&init_status, container, err);
   if (UNLIKELY (ret < 0))
     return ret;
 
@@ -939,19 +940,19 @@ libcrun_run_linux_container (libcrun_container_t *container, container_entrypoin
           if (UNLIKELY (ret < 0))
             return ret;
 
-+         // 和container端通信，得到new_pid
-          ret = TEMP_FAILURE_RETRY (read (sync_socket_host, &new_pid, sizeof (new_pid)));
+-         // 和container端通信，得到new_pid
++         ret = TEMP_FAILURE_RETRY (read (sync_socket_host, &new_pid, sizeof (new_pid)));
           if (UNLIKELY (ret != sizeof (new_pid)))
             return crun_make_error (err, errno, "read pid from sync socket");
 
-+         // 等container端第一个子进程结束
-          /* Cleanup the first process.  */
+-         // 等container端第一个子进程结束
++         /* Cleanup the first process.  */
           ret = TEMP_FAILURE_RETRY (waitpid (pid, NULL, 0));
 
           pid_to_clean = pid = new_pid;
 
-+         // 和container通信，确保new_pid正常工作
-          ret = TEMP_FAILURE_RETRY (write (sync_socket_host, &success, 1));
+-         // 和container通信，确保new_pid正常工作
++         ret = TEMP_FAILURE_RETRY (write (sync_socket_host, &success, 1));
           if (UNLIKELY (ret < 0))
             return ret;
         }
@@ -1004,14 +1005,14 @@ libcrun_run_linux_container (libcrun_container_t *container, container_entrypoin
       if (UNLIKELY (ret < 0))
         return ret;
 
-+     // 把host端的socket通过参数传递到libcrun_run_linux_container函数外面，由libcrun_container_run_internal继续处理
-      *sync_socket_out = get_and_reset (&sync_socket_host);
+-     // 把host端的socket通过参数传递到libcrun_run_linux_container函数外面，由libcrun_container_run_internal继续处理
++     *sync_socket_out = get_and_reset (&sync_socket_host);
 
       pid_to_clean = 0;
       return pid;
     }
 
-+ // 这里是container端了
+- // 这里是container端了
   /* Inside the container process.  */
 
   ret = close_and_reset (&sync_socket_host);
@@ -1053,8 +1054,10 @@ libcrun_run_linux_container (libcrun_container_t *container, container_entrypoin
 }
 ```
 
-- libcrun_run_linux_container -> configure_init_status
-> 处理config.json里的namespace，分为unshare和share两类
+- ***libcrun_run_linux_container -> configure_init_status***
+```diff
+- 处理config.json里的namespace，分为unshare和share两类
+```
 ```diff
 static int
 configure_init_status (struct init_status_s *ns, libcrun_container_t *container, libcrun_error_t *err)
@@ -1077,7 +1080,7 @@ configure_init_status (struct init_status_s *ns, libcrun_container_t *container,
   ns->idx_pidns_to_join_immediately = -1;
   ns->idx_timens_to_join_immediately = -1;
 
-+ // 遍历config.json里的namespace。指定path是是要share的namespace，path=NULL是unshare的namespace
+- // 遍历config.json里的namespace。指定path是是要share的namespace，path=NULL是unshare的namespace
   for (i = 0; i < def->linux->namespaces_len; i++)
     {
       int value = libcrun_find_namespace (def->linux->namespaces[i]->type);
@@ -1098,11 +1101,11 @@ configure_init_status (struct init_status_s *ns, libcrun_container_t *container,
           fd = open (def->linux->namespaces[i]->path, O_RDONLY | O_CLOEXEC);
           if (UNLIKELY (fd < 0))
             return crun_make_error (err, errno, "open `%s`", def->linux->namespaces[i]->path);
-+         // share USER的namespace要单独标注，后面有不同的处理逻辑
+-         // share USER的namespace要单独标注，后面有不同的处理逻辑
           if (value == CLONE_NEWUSER)
             {
-              ns->userns_index = ns->fd_len;
-              ns->userns_index_origin = i;
++             ns->userns_index = ns->fd_len;
++             ns->userns_index_origin = i;
             }
 
           ns->fd[ns->fd_len] = fd;
@@ -1113,23 +1116,25 @@ configure_init_status (struct init_status_s *ns, libcrun_container_t *container,
         }
     }
 
-+ // 如果host_uid!=0(非root)，NEWUSER namespace必须加上
+- // 如果host_uid!=0(非root)，NEWUSER namespace必须加上
   if (container->host_uid && (ns->all_namespaces & CLONE_NEWUSER) == 0)
     {
       libcrun_warning ("non root user need to have an 'user' namespace");
-      ns->all_namespaces |= CLONE_NEWUSER;
-      ns->namespaces_to_unshare |= CLONE_NEWUSER;
+ +    ns->all_namespaces |= CLONE_NEWUSER;
+ +    ns->namespaces_to_unshare |= CLONE_NEWUSER;
     }
 
   return 0;
 }
 ```
 
-- libcrun_run_linux_container -> init_container
-> init_container是属于container进程。
-> 1. 先处理container进程的NEWPID和NEWTIME namespace，setns设置为目标namespace <br>
-> 2. fork一次。fork的父进程把new_pid传回给host端，然后退出 <br>
-> 3. 在子进程里，setns需要share的namespace
+- ***libcrun_run_linux_container -> init_container***
+```diff
+- init_container是属于container进程。
+- 1. 先处理container进程的NEWPID和NEWTIME namespace，setns设置为目标namespace
+- 2. fork一次。fork的父进程把new_pid传回给host端，然后退出
+- 3. 在子进程里，setns需要share的namespace
+```
 
 ```diff
 static int
