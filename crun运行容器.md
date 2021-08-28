@@ -590,7 +590,7 @@ libcrun_container_run_internal (libcrun_container_t *container, libcrun_context_
   if (UNLIKELY (cgroup_mode < 0))
     return cgroup_mode;
 
-- // 运行一个linux容器，注意参数entrypoint=container_init，返回host pid以及sync_socket
+- // 运行一个linux容器，注意参数entrypoint=container_init，返回grand child pid以及sync_socket
 + pid = libcrun_run_linux_container (container, container_init, &container_args, &sync_socket, err);
   if (UNLIKELY (pid < 0))
     return pid;
@@ -722,6 +722,7 @@ libcrun_container_run_internal (libcrun_container_t *container, libcrun_context_
   if (UNLIKELY (ret < 0))
     return cleanup_watch (context, def, cgroup_path, cgroup_mode, pid, sync_socket, terminal_fd, err);
 
++ // 得到container端传过来的pty masterfd，设置好状态
   if (def->process && def->process->terminal && ! detach && context->console_socket == NULL)
     {
       terminal_fd = receive_fd_from_socket (socket_pair_0, err);
@@ -745,7 +746,9 @@ libcrun_container_run_internal (libcrun_container_t *container, libcrun_context_
     return cleanup_watch (context, def, cgroup_path, cgroup_mode, pid, sync_socket, terminal_fd, err);
 
   get_current_timestamp (created);
-  ret = write_container_status (container, context, pid, cgroup_path, scope, created, err);
+
+- // 修改container状态到“created”
++ ret = write_container_status (container, context, pid, cgroup_path, scope, created, err);
   if (UNLIKELY (ret < 0))
     return cleanup_watch (context, def, cgroup_path, cgroup_mode, pid, sync_socket, terminal_fd, err);
 
@@ -786,8 +789,9 @@ libcrun_container_run_internal (libcrun_container_t *container, libcrun_context_
 
 - [libcrun_run_linux_container](https://github.com/containers/crun/blob/main/src/libcrun/linux.c)
 ```diff
-- linux container的初始化总体分为host端和container端，container端是host端fork出来，是父子关系<br>
-- container端里面为了正确设置namespace还会fork
+- linux container的初始化总体分为host端和container端，container端是host端fork出来，是父子关系
+- container端为了正确设置namespace还会fork一次
+- 返回grand child pid
 ```
 
 ```diff
@@ -808,7 +812,7 @@ libcrun_run_linux_container (libcrun_container_t *container, container_entrypoin
   pid_t pid;
   size_t i;
   int ret;
-- // 初始化namespace
+- // 把namespace的需求做分类
 + ret = configure_init_status (&init_status, container, err);
   if (UNLIKELY (ret < 0))
     return ret;
@@ -850,6 +854,7 @@ libcrun_run_linux_container (libcrun_container_t *container, container_entrypoin
   if (UNLIKELY (ret < 0))
     return ret;
 
+- // 如果要新创建NEWUSER namespace，同时还有需要join的其它namespac。次序是先join，后创建NEWUSER。
   /* If a new user namespace must be created, but there are other namespaces to join, then delay
      the userns creation after the namespaces are joined.  */
   init_status.delayed_userns_create
@@ -867,12 +872,14 @@ libcrun_run_linux_container (libcrun_container_t *container, container_entrypoin
           break;
 
         case CLONE_NEWPID:
+-         // 如果没有NEWUSER，而有NEWPID需要join，must_fork=true        
           if ((init_status.all_namespaces & CLONE_NEWUSER) == 0)
-            init_status.must_fork = true;
++           init_status.must_fork = true;
           else
             {
               init_status.join_pidns = true;
-              init_status.idx_pidns_to_join_immediately = i;
+-             // 如果有NEWUSER，同时有NEWPID需要join
++             init_status.idx_pidns_to_join_immediately = i;
               init_status.namespaces_to_unshare &= ~CLONE_NEWPID;
             }
           break;
@@ -882,7 +889,8 @@ libcrun_run_linux_container (libcrun_container_t *container, container_entrypoin
             init_status.must_fork = true;
           else
             {
-              init_status.idx_timens_to_join_immediately = i;
+  -           // 如果有NEWUSER，同时有NEWTIME需要join
+  +           init_status.idx_timens_to_join_immediately = i;
               init_status.namespaces_to_unshare &= ~CLONE_NEWTIME;
             }
           break;
@@ -946,8 +954,8 @@ libcrun_run_linux_container (libcrun_container_t *container, container_entrypoin
             return crun_make_error (err, errno, "read pid from sync socket");
 
 -         // 等container端第一个子进程结束
-+         /* Cleanup the first process.  */
-          ret = TEMP_FAILURE_RETRY (waitpid (pid, NULL, 0));
+          /* Cleanup the first process.  */
++         ret = TEMP_FAILURE_RETRY (waitpid (pid, NULL, 0));
 
           pid_to_clean = pid = new_pid;
 
@@ -957,9 +965,10 @@ libcrun_run_linux_container (libcrun_container_t *container, container_entrypoin
             return ret;
         }
 
+-     // 如果有delayed_userns_create标志，要等container端join好namespace后再处理user namespace
       if (init_status.delayed_userns_create)
         {
-          ret = expect_success_from_sync_socket (sync_socket_host, err);
++         ret = expect_success_from_sync_socket (sync_socket_host, err);
           if (UNLIKELY (ret < 0))
             return ret;
         }
@@ -967,7 +976,7 @@ libcrun_run_linux_container (libcrun_container_t *container, container_entrypoin
 -     // set NEWUSER namespace
       if ((init_status.all_namespaces & CLONE_NEWUSER) && init_status.userns_index < 0)
         {
-          ret = libcrun_set_usernamespace (container, pid, err);
++         ret = libcrun_set_usernamespace (container, pid, err);
           if (UNLIKELY (ret < 0))
             return ret;
 
@@ -996,8 +1005,9 @@ libcrun_run_linux_container (libcrun_container_t *container, container_entrypoin
 
 -         // 等待new_pid子进程退出
           /* Cleanup the first process.  */
-          waitpid (pid, NULL, 0);
++          waitpid (pid, NULL, 0);
 
+-         // container端目前是grandchild
           pid_to_clean = pid = grandchild;
         }
 
@@ -1044,8 +1054,8 @@ libcrun_run_linux_container (libcrun_container_t *container, container_entrypoin
   if (container->context->notify_socket)
     xasprintf (&notify_socket_env, "NOTIFY_SOCKET=%s/notify", container->context->notify_socket);
 
-- // 执行entrypont的命令
-  entrypoint (args, notify_socket_env, sync_socket_container, err);
+- // 执行entrypont的命令，也就是container_init
++ entrypoint (args, notify_socket_env, sync_socket_container, err);
 
   /* ENTRYPOINT returns only on an error, fallback here: */
   if (*err)
@@ -1054,9 +1064,9 @@ libcrun_run_linux_container (libcrun_container_t *container, container_entrypoin
 }
 ```
 
-- ***libcrun_run_linux_container -> configure_init_status***
+> ***libcrun_run_linux_container -> configure_init_status***
 ```diff
-- 处理config.json里的namespace，分为unshare和share两类
+- 处理config.json里的namespace，分为unshare(新建namespace)和share(join已经存在的namespace）两类
 ```
 ```diff
 static int
@@ -1322,9 +1332,9 @@ init_container (libcrun_container_t *container, int sync_socket_container, struc
 }
 ```
 
-- ***libcrun_run_linux_container -> libcrun_set_usernamespace***
+> ***libcrun_run_linux_container -> libcrun_set_usernamespace***
 ```diff
-- 成uidmap和gidmap文件
+- 生成uidmap和gidmap文件
 ```
 int
 libcrun_set_usernamespace (libcrun_container_t *container, pid_t pid, libcrun_error_t *err)
@@ -1468,7 +1478,7 @@ libcrun_set_usernamespace (libcrun_container_t *container, pid_t pid, libcrun_er
 #undef MAPPING_FMT_1
 }
 ```
-- libcrun_run_linux_container -> init_container -> join_namespaces
+> libcrun_run_linux_container -> init_container -> join_namespaces
 ```diff
 static int
 join_namespaces (runtime_spec_schema_config_schema *def, int *namespaces_to_join, int n_namespaces_to_join,
@@ -1486,7 +1496,7 @@ join_namespaces (runtime_spec_schema_config_schema *def, int *namespaces_to_join
       if (namespaces_to_join[i] < 0)
         continue;
 
-+     // 忽略NEWUSER
+-     // 忽略NEWUSER
       /* Skip the user namespace.  */
       value = libcrun_find_namespace (def->linux->namespaces[orig_index]->type);
       if (value == CLONE_NEWUSER)
@@ -1520,7 +1530,10 @@ join_namespaces (runtime_spec_schema_config_schema *def, int *namespaces_to_join
 }
 ```
 
-- ***container_init***是contaier的entrypont
+- ***container_init***
+```
+- container_init是容器的entrypoint，也是执行的最后一步
+```
 ```diff
 /* Entrypoint to the container.  */
 static int
@@ -1546,6 +1559,7 @@ container_init (void *args, char *notify_socket, int sync_socket, libcrun_error_
       return crun_make_error (err, errno, "read from sync socket");
     }
 
++ // 完成contaienr最后阶段初始化工作，如HOME，mounts, console, hostname，capabilities, 
 + ret = container_init_setup (args, own_pid, notify_socket, sync_socket, &exec_path, err);
   if (UNLIKELY (ret < 0))
     {
@@ -1571,6 +1585,7 @@ container_init (void *args, char *notify_socket, int sync_socket, libcrun_error_
 
   close_and_reset (&sync_socket);
 
+- // 在fifo_exec_wait_fd阻塞等待，直到crun start解除阻塞
   if (entrypoint_args->context->fifo_exec_wait_fd >= 0)
     {
       char buffer[1];
@@ -1586,7 +1601,7 @@ container_init (void *args, char *notify_socket, int sync_socket, libcrun_error_
           if (UNLIKELY (ret < 0))
             return crun_make_error (err, errno, "select");
 
-          ret = TEMP_FAILURE_RETRY (read (fd, buffer, sizeof (buffer)));
++         ret = TEMP_FAILURE_RETRY (read (fd, buffer, sizeof (buffer)));
           if (UNLIKELY (ret < 0))
             return crun_make_error (err, errno, "read from the exec fifo");
       } while (ret == 0);
@@ -1760,6 +1775,7 @@ container_init_setup (void *args, pid_t own_pid, char *notify_socket, int sync_s
   if (UNLIKELY (ret < 0))
     crun_error_write_warning_and_release (entrypoint_args->context->output_handler_arg, &err);
 
+- // 使用pivot_root命令切换根目录到rootfs
   if (rootfs)
     {
       ret = libcrun_do_pivot_root (container, entrypoint_args->context->no_pivot, rootfs, err);
@@ -1809,7 +1825,8 @@ container_init_setup (void *args, pid_t own_pid, char *notify_socket, int sync_s
         }
     }
 
-  ret = setsid ();
+-  // 脱离父进程包括它的终端控制。
++  ret = setsid ();
   if (UNLIKELY (ret < 0))
     return crun_make_error (err, errno, "setsid");
 
@@ -1819,10 +1836,12 @@ container_init_setup (void *args, pid_t own_pid, char *notify_socket, int sync_s
 
       fflush (stderr);
 
-      terminal_fd = libcrun_set_terminal (container, err);
+-     // 得到pty伪终端的masterfd，从设备在/dev/pts/xx
++     terminal_fd = libcrun_set_terminal (container, err);
       if (UNLIKELY (terminal_fd < 0))
         return terminal_fd;
 
+-     // 把伪终端masterfd通过console_socket传给host端
       if (console_socket >= 0)
         {
           ret = send_fd_to_socket (console_socket, terminal_fd, err);
@@ -1840,7 +1859,8 @@ container_init_setup (void *args, pid_t own_pid, char *notify_socket, int sync_s
         }
     }
 
-  ret = libcrun_set_hostname (container, err);
+- // 设置hostname
++ ret = libcrun_set_hostname (container, err);
   if (UNLIKELY (ret < 0))
     return ret;
 
@@ -1889,10 +1909,11 @@ container_init_setup (void *args, pid_t own_pid, char *notify_socket, int sync_s
       if (UNLIKELY (ret < 0))
         return ret;
     }
-
+    
+- // 设置capabilities
   capabilities = def->process ? def->process->capabilities : NULL;
   no_new_privs = def->process ? def->process->no_new_privileges : 1;
-  ret = libcrun_set_caps (capabilities, container->container_uid, container->container_gid, no_new_privs, err);
++ ret = libcrun_set_caps (capabilities, container->container_uid, container->container_gid, no_new_privs, err);
   if (UNLIKELY (ret < 0))
     return ret;
 
