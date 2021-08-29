@@ -67,18 +67,19 @@ libcrun_container_start (libcrun_context_t *context, const char *id, libcrun_err
   cleanup_close int fd = -1;
   int ret;
 
-  ret = libcrun_read_container_status (&status, state_root, id, err);
++ ret = libcrun_read_container_status (&status, state_root, id, err);
   if (UNLIKELY (ret < 0))
     return ret;
 
-  ret = libcrun_is_container_running (&status, err);
+- // 检查contaienr的PID是否在
++ ret = libcrun_is_container_running (&status, err);
   if (UNLIKELY (ret < 0))
     return ret;
 
   if (! ret)
     return crun_make_error (err, 0, "container `%s` is not running", id);
 
-  ret = read_container_config_from_state (&container, state_root, id, err);
++ ret = read_container_config_from_state (&container, state_root, id, err);
   if (UNLIKELY (ret < 0))
     return ret;
 
@@ -89,7 +90,7 @@ libcrun_container_start (libcrun_context_t *context, const char *id, libcrun_err
         return ret;
     }
 
-  ret = libcrun_status_write_exec_fifo (context->state_root, id, err);
++ ret = libcrun_status_write_exec_fifo (context->state_root, id, err);
   if (UNLIKELY (ret < 0))
     return ret;
 
@@ -154,7 +155,7 @@ libcrun_container_start (libcrun_context_t *context, const char *id, libcrun_err
 }
 ```
 > libcrun_read_container_status
-```
+```diff
 int
 libcrun_read_container_status (libcrun_container_status_t *status, const char *state_root, const char *id,
                                libcrun_error_t *err)
@@ -268,5 +269,83 @@ libcrun_read_container_status (libcrun_container_status_t *status, const char *s
   }
   yajl_tree_free (tree);
   return 0;
+}
+```
+> libcrun_is_container_running
+```diff
+int
+libcrun_is_container_running (libcrun_container_status_t *status, libcrun_error_t *err)
+{
+  int ret;
+- // kill -0的说明，如果参数是0，不会发送任何的信号，但是仍会执行错误检查，可以用来检测某个进程ID或进程组ID是否存在
++ ret = kill (status->pid, 0);
+  if (UNLIKELY (ret < 0) && errno != ESRCH)
+    return crun_make_error (err, errno, "kill");
+
+  if (ret == 0)
+    return libcrun_check_pid_valid (status, err);
+
+  return 0; /* stopped */
+}
+```
+> read_container_config_from_state
+```
+static int
+read_container_config_from_state (libcrun_container_t **container, const char *state_root, const char *id,
+                                  libcrun_error_t *err)
+{
+  cleanup_free char *config_file = NULL;
+  cleanup_free char *dir = NULL;
+  int ret;
+
+  *container = NULL;
+
+  dir = libcrun_get_state_directory (state_root, id);
+  if (UNLIKELY (dir == NULL))
+    return crun_make_error (err, 0, "cannot get state directory from `%s`", state_root);
+
+  ret = append_paths (&config_file, err, dir, "config.json", NULL);
+  if (UNLIKELY (ret < 0))
+    return ret;
+
+  *container = libcrun_container_load_from_file (config_file, err);
+  if (*container == NULL)
+    return crun_make_error (err, 0, "error loading `%s`", config_file);
+
+  return 0;
+}
+```
+
+> libcrun_status_write_exec_fifo
+```
+int
+libcrun_status_write_exec_fifo (const char *state_root, const char *id, libcrun_error_t *err)
+{
+  cleanup_free char *state_dir = libcrun_get_state_directory (state_root, id);
+  cleanup_free char *fifo_path = NULL;
+  char buffer[1] = {
+    0,
+  };
+  cleanup_close int fd = -1;
+  int ret;
+
+  ret = append_paths (&fifo_path, err, state_dir, "exec.fifo", NULL);
+  if (UNLIKELY (ret < 0))
+    return ret;
+
+  fd = open (fifo_path, O_WRONLY);
+  if (UNLIKELY (fd < 0))
+    return crun_make_error (err, errno, "cannot open `%s`", fifo_path);
+
+  ret = unlink (fifo_path);
+  if (UNLIKELY (ret < 0))
+    return crun_make_error (err, errno, "unlink `%s`", fifo_path);
+
+-  // crun create的时候阻塞在read(fifo...)，现在解除阻塞继续执行entrypoint里定义的命令
++  ret = TEMP_FAILURE_RETRY (write (fd, buffer, 1));
+  if (UNLIKELY (ret < 0))
+    return crun_make_error (err, errno, "read from exec.fifo");
+
+  return strtoll (buffer, NULL, 10);
 }
 ```
