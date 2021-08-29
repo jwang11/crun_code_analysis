@@ -38,9 +38,9 @@ crun_command_start (struct crun_global_arguments *global_args, int argc, char **
 - $ ls /run/crun/busybox1/
 config.json  exec.fifo  status
 
-- config.json是spec的一份copy
-- exec.fifo 是为了阻塞
-- status 文件是状态文件
++ config.json是spec的一份copy
++ exec.fifo 是为了阻塞
++ status 文件是状态文件
 {
     "pid": 139179,
     "process-start-time": 263473330,
