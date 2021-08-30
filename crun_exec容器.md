@@ -206,6 +206,7 @@ libcrun_container_exec (libcrun_context_t *context, const char *id, runtime_spec
   if (UNLIKELY (ret < 0))
     return ret;
 
+- // 因为crun create容器里的进程的namespace都已经设置好了，crun exec直接join，不需要重新设置了。
 + pid = libcrun_join_process (container, status.pid, &status, context->detach, process->terminal ? &terminal_fd : NULL,
                               err);
   if (UNLIKELY (pid < 0))
@@ -482,7 +483,7 @@ libcrun_join_process (libcrun_container_t *container, pid_t pid_to_join, libcrun
     {
       close_and_reset (&sync_socket_fd[1]);
       sync_fd = sync_socket_fd[0];
-      return join_process_parent_helper (pid, sync_fd, status, terminal_fd, err);
++     return join_process_parent_helper (pid, sync_fd, status, terminal_fd, err);
     }
 
   close_and_reset (&sync_socket_fd[0]);
@@ -606,8 +607,8 @@ libcrun_join_process (libcrun_container_t *container, pid_t pid_to_join, libcrun
               crun_make_error (err, errno, "setsid");
               send_error_to_sync_socket_and_die (sync_fd, true, err);
             }
-
-          ret = set_id_init (container, err);
+-         // 设置uid，gid
++         ret = set_id_init (container, err);
           if (UNLIKELY (ret < 0))
             send_error_to_sync_socket_and_die (sync_fd, true, err);
 
@@ -637,3 +638,136 @@ exit:
   return ret;
 }
 ```
+
+>> join_process_parent_helper
+```diff
+static int
+join_process_parent_helper (pid_t child_pid, int sync_socket_fd, libcrun_container_status_t *status, int *terminal_fd,
+                            libcrun_error_t *err)
+{
+  int ret, pid_status;
+  char res;
+  pid_t pid;
+  cleanup_close int sync_fd = sync_socket_fd;
+
+  if (terminal_fd)
+    *terminal_fd = -1;
+
+  /* Read the status and the PID from the child process.  */
+  ret = TEMP_FAILURE_RETRY (read (sync_fd, &res, 1));
+  if (UNLIKELY (ret < 0))
+    return crun_make_error (err, errno, "read from sync socket");
+
+  if (res != '0')
+    return crun_make_error (err, 0, "fail startup");
+
+- // 得到grand child PID
++ ret = TEMP_FAILURE_RETRY (read (sync_fd, &pid, sizeof (pid)));
+  if (UNLIKELY (ret < 0))
+    return crun_make_error (err, errno, "read from sync socket");
+
+  /* Wait for the child pid so we ensure the grandchild gets properly reparented.  */
+  ret = TEMP_FAILURE_RETRY (waitpid (child_pid, &pid_status, 0));
+  if (UNLIKELY (ret < 0))
+    return crun_make_error (err, errno, "waitpid for exec child pid");
+
+-  // 把grand child PID加入cgroup
++  ret = libcrun_move_process_to_cgroup (pid, status->pid, status->cgroup_path, err);
+  if (UNLIKELY (ret < 0))
+    return ret;
+
+  /* The write unblocks the grandchild process so it can run once we setup
+     the cgroups.  */
+  ret = TEMP_FAILURE_RETRY (write (sync_fd, &ret, sizeof (ret)));
+  if (UNLIKELY (ret < 0))
+    return crun_make_error (err, errno, "write to sync socket");
+
+  if (terminal_fd)
+    {
+      ret = receive_fd_from_socket (sync_fd, err);
+      if (UNLIKELY (ret < 0))
+        {
+          int err_code;
+          cleanup_free char *err_str = NULL;
+
+          if (read_error_from_sync_socket (sync_fd, &err_code, &err_str))
+            return crun_make_error (err, err_code, "%s", err_str);
+
+          return crun_error_wrap (err, "receive fd");
+        }
+      *terminal_fd = ret;
+    }
+
+  return pid;
+}
+```
+
+>> set_id_init
+```diff
+static int
+set_id_init (libcrun_container_t *container, libcrun_error_t *err)
+{
+  runtime_spec_schema_config_schema *def = container->container_def;
+  uid_t uid = 0;
+  gid_t gid = 0;
+  int ret;
+
+  if (def->process && def->process->user && def->linux)
+    {
+      /*
+        If it is running in a user namespace and root is not mapped
+        use the UID/GID specified for running the container.
+      */
+      bool root_mapped = false;
+
+      if (def->linux->uid_mappings_len != 0)
+        {
+          root_mapped = root_mapped_in_container_p (def->linux->uid_mappings, def->linux->uid_mappings_len);
+          if (! root_mapped)
+            uid = def->process->user->uid;
+        }
+
+      if (def->linux->gid_mappings_len != 0)
+        {
+          root_mapped = root_mapped_in_container_p (def->linux->gid_mappings, def->linux->gid_mappings_len);
+          if (! root_mapped)
+            gid = def->process->user->gid;
+        }
+    }
+-  // 同时修改ruid, euid和suid
++  ret = setresuid (uid, uid, uid);
+  if (UNLIKELY (ret < 0))
+    return crun_make_error (err, errno, "setresuid to %d", uid);
+
+  ret = setresgid (gid, gid, gid);
+  if (UNLIKELY (ret < 0))
+    return crun_make_error (err, errno, "setresgid to %d", gid);
+
+  return 0;
+}
+```
+
+>> libcrun_move_process_to_cgroup
+```
+int
+libcrun_move_process_to_cgroup (pid_t pid, pid_t init_pid, char *path, libcrun_error_t *err)
+{
+  int cgroup_mode = libcrun_get_cgroup_mode (err);
+  if (UNLIKELY (cgroup_mode < 0))
+    return cgroup_mode;
+
+  if (path == NULL || *path == '\0')
+    return 0;
+
+  return enter_cgroup (cgroup_mode, pid, init_pid, path, false, err);
+}
+
+static int
+enter_cgroup (int cgroup_mode, pid_t pid, pid_t init_pid, const char *path, bool create_if_missing,
+              libcrun_error_t *err)
+{
+  if (cgroup_mode == CGROUP_MODE_UNIFIED)
+    return enter_cgroup_v2 (pid, init_pid, path, create_if_missing, err);
+
+  return enter_cgroup_v1 (pid, path, create_if_missing, err);
+}
