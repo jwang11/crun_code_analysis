@@ -206,7 +206,7 @@ libcrun_container_exec (libcrun_context_t *context, const char *id, runtime_spec
   if (UNLIKELY (ret < 0))
     return ret;
 
-  pid = libcrun_join_process (container, status.pid, &status, context->detach, process->terminal ? &terminal_fd : NULL,
++ pid = libcrun_join_process (container, status.pid, &status, context->detach, process->terminal ? &terminal_fd : NULL,
                               err);
   if (UNLIKELY (pid < 0))
     return pid;
@@ -280,7 +280,8 @@ libcrun_container_exec (libcrun_context_t *context, const char *id, runtime_spec
           seccomp_flags_len = container->container_def->linux->seccomp->flags_len;
         }
 
-      exec_path = find_executable (process->args[0], process->cwd);
+-     // 得到执行命令
++     exec_path = find_executable (process->args[0], process->cwd);
       if (UNLIKELY (exec_path == NULL))
         {
           if (errno == ENOENT)
@@ -438,6 +439,201 @@ libcrun_container_exec (libcrun_context_t *context, const char *id, runtime_spec
     }
 
   flush_fd_to_err (context, terminal_fd);
+  return ret;
+}
+```
+- libcrun_container_exec -> libcrun_join_process
+```diff
+int
+libcrun_join_process (libcrun_container_t *container, pid_t pid_to_join, libcrun_container_status_t *status, int detach,
+                      int *terminal_fd, libcrun_error_t *err)
+{
+  pid_t pid;
+  int ret;
+  int sync_socket_fd[2];
+  int fds[10] = {
+    -1,
+  };
+  int fds_joined[10] = {
+    0,
+  };
+  runtime_spec_schema_config_schema *def = container->container_def;
+  size_t i;
+  cleanup_close int sync_fd = -1;
+
+  if (! detach)
+    {
+      ret = prctl (PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0);
+      if (UNLIKELY (ret < 0))
+        return crun_make_error (err, errno, "set child subreaper");
+    }
+
+  ret = socketpair (AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sync_socket_fd);
+  if (UNLIKELY (ret < 0))
+    return crun_make_error (err, errno, "error creating socketpair");
+
+  pid = fork ();
+  if (UNLIKELY (pid < 0))
+    {
+      crun_make_error (err, errno, "fork");
+      goto exit;
+    }
+  if (pid)
+    {
+      close_and_reset (&sync_socket_fd[1]);
+      sync_fd = sync_socket_fd[0];
+      return join_process_parent_helper (pid, sync_fd, status, terminal_fd, err);
+    }
+
+  close_and_reset (&sync_socket_fd[0]);
+  sync_fd = sync_socket_fd[1];
+
+  if (def->linux->namespaces_len >= 10)
+    {
+      crun_make_error (err, 0, "invalid configuration");
+      goto exit;
+    }
+
+  for (i = 0; namespaces[i].ns_file; i++)
+    {
+      cleanup_free char *ns_join = NULL;
+
+      xasprintf (&ns_join, "/proc/%d/ns/%s", pid_to_join, namespaces[i].ns_file);
+      fds[i] = open (ns_join, O_RDONLY);
+      if (UNLIKELY (fds[i] < 0))
+        {
+          /* If the namespace doesn't exist, just ignore it.  */
+          if (errno == ENOENT)
+            continue;
+          ret = crun_make_error (err, errno, "open `%s`", ns_join);
+          goto exit;
+        }
+    }
+
+  for (i = 0; namespaces[i].ns_file; i++)
+    {
+      if (namespaces[i].value == CLONE_NEWUSER)
+        continue;
+
+      ret = setns (fds[i], 0);
+      if (ret == 0)
+        fds_joined[i] = 1;
+    }
+  for (i = 0; namespaces[i].ns_file; i++)
+    {
+      ret = setns (fds[i], 0);
+      if (ret == 0)
+        fds_joined[i] = 1;
+    }
+  for (i = 0; namespaces[i].ns_file; i++)
+    {
+      if (fds_joined[i])
+        continue;
+      ret = setns (fds[i], 0);
+      if (UNLIKELY (ret < 0 && errno != EINVAL))
+        {
+          size_t j;
+          bool found = false;
+
+          for (j = 0; j < def->linux->namespaces_len; j++)
+            {
+              if (strcmp (namespaces[i].ns_file, def->linux->namespaces[j]->type) == 0)
+                {
+                  found = true;
+                  break;
+                }
+            }
+          if (! found)
+            {
+              /* It was not requested to create this ns, so just ignore it.  */
+              fds_joined[i] = 1;
+              continue;
+            }
+          crun_make_error (err, errno, "setns `%s`", namespaces[i].ns_file);
+          goto exit;
+        }
+      fds_joined[i] = 1;
+    }
+  for (i = 0; namespaces[i].ns_file; i++)
+    close_and_reset (&fds[i]);
+
+  if (setsid () < 0)
+    {
+      crun_make_error (err, errno, "setsid");
+      goto exit;
+    }
+
+  /* We need to fork once again to join the PID namespace.  */
+  pid = fork ();
+  if (UNLIKELY (pid < 0))
+    {
+      ret = TEMP_FAILURE_RETRY (write (sync_fd, "1", 1));
+      crun_make_error (err, errno, "fork");
+      goto exit;
+    }
+
+  if (pid)
+    {
+      /* Just return the PID to the parent helper and exit.  */
+      ret = TEMP_FAILURE_RETRY (write (sync_fd, "0", 1));
+      if (UNLIKELY (ret < 0))
+        _exit (EXIT_FAILURE);
+
+      ret = TEMP_FAILURE_RETRY (write (sync_fd, &pid, sizeof (pid)));
+      if (UNLIKELY (ret < 0))
+        _exit (EXIT_FAILURE);
+
+      _exit (EXIT_SUCCESS);
+    }
+  else
+    {
+      /* Inside the grandchild process.  The real process
+         used for the container.  */
+      int r = -1;
+      cleanup_free char *pty = NULL;
+
+      ret = TEMP_FAILURE_RETRY (read (sync_fd, &r, sizeof (r)));
+      if (UNLIKELY (ret < 0))
+        _exit (EXIT_FAILURE);
+
+      if (terminal_fd)
+        {
+          cleanup_close int ptmx_fd = -1;
+
+          ret = setsid ();
+          if (ret < 0)
+            {
+              crun_make_error (err, errno, "setsid");
+              send_error_to_sync_socket_and_die (sync_fd, true, err);
+            }
+
+          ret = set_id_init (container, err);
+          if (UNLIKELY (ret < 0))
+            send_error_to_sync_socket_and_die (sync_fd, true, err);
+
+          ptmx_fd = open_terminal (container, &pty, err);
+          if (UNLIKELY (ptmx_fd < 0))
+            send_error_to_sync_socket_and_die (sync_fd, true, err);
+
+          ret = send_fd_to_socket (sync_fd, ptmx_fd, err);
+          if (UNLIKELY (ret < 0))
+            send_error_to_sync_socket_and_die (sync_fd, true, err);
+        }
+
+      if (r < 0)
+        _exit (EXIT_FAILURE);
+    }
+
+  return pid;
+
+exit:
+  if (sync_socket_fd[0] >= 0)
+    TEMP_FAILURE_RETRY (close (sync_socket_fd[0]));
+  if (sync_socket_fd[1] >= 0)
+    TEMP_FAILURE_RETRY (close (sync_socket_fd[1]));
+  for (i = 0; namespaces[i].ns_file; i++)
+    if (fds[i] >= 0)
+      TEMP_FAILURE_RETRY (close (fds[i]));
   return ret;
 }
 ```
