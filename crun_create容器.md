@@ -181,7 +181,7 @@ crun_command_create (struct crun_global_arguments *global_args, int argc, char *
     crun_context.preserve_fds += strtoll (getenv ("LISTEN_FDS"), NULL, 10);
 
 - // 根据container对象和运行contex，创建容器
-+  return libcrun_container_create (&crun_context, container, 0, err);
++ return libcrun_container_create (&crun_context, container, 0, err);
 }
 ```
 > crun_command_create -> init_libcrun_context
@@ -272,10 +272,10 @@ struct libcrun_container_s
 };
 
 - // 定义libcrun_container_t
-+ typedef struct libcrun_container_s libcrun_container_t;
+typedef struct libcrun_container_s libcrun_container_t;
 
 - // oci runtime spec的schema定义
-+ typedef struct {
+typedef struct {
     char *oci_version;
 
     runtime_spec_schema_config_schema_hooks *hooks;
@@ -303,13 +303,12 @@ struct libcrun_container_s
 }
 runtime_spec_schema_config_schema;
 
-
 libcrun_container_t *
 libcrun_container_load_from_file (const char *path, libcrun_error_t *err)
 {
   runtime_spec_schema_config_schema *container_def;
   cleanup_free char *oci_error = NULL;
-  container_def = runtime_spec_schema_config_schema_parse_file (path, NULL, &oci_error);
++ container_def = runtime_spec_schema_config_schema_parse_file (path, NULL, &oci_error);
   if (container_def == NULL)
     {
       crun_make_error (err, 0, "load `%s`: %s", path, oci_error);
@@ -317,7 +316,9 @@ libcrun_container_load_from_file (const char *path, libcrun_error_t *err)
     }
 + return make_container (container_def);
 }
-
+```
+>> libcrun_container_load_from_file -> ime_spec_schema_config_schema_parse_file
+```diff
 runtime_spec_schema_config_schema *
 runtime_spec_schema_config_schema_parse_file (const char *filename, const struct parser_context *ctx, parser_error *err)
 {
@@ -339,7 +340,10 @@ runtime_spec_schema_config_schema_parse_file (const char *filename, const struct
     ptr = runtime_spec_schema_config_schema_parse_data (content, ctx, err);
     return ptr;
 }
+```
 
+>> libcrun_container_load_from_file -> make_container
+```diff
 static libcrun_container_t *
 make_container (runtime_spec_schema_config_schema *container_def)
 {
