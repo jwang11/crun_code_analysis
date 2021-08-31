@@ -474,7 +474,7 @@ libcrun_container_create (libcrun_context_t *context, libcrun_container_t *conta
 
 - ***crun_command_create -> libcrun_container_create -> libcrun_container_run_internal***
 ```diff
-- 从这里才是真正开始create容器。为了正确设置namespace（有些unshare，有些join），需要多次fork和进程间同步，过程比较复杂
+- 从这里才是真正开始create容器。容器里最麻烦的是设置namespace（有些unshare，有些join，还有些不能同时进行），需要多次fork和进程间同步，过程比较复杂
 ```
 ```diff
 static int
@@ -516,7 +516,7 @@ libcrun_container_run_internal (libcrun_container_t *container, libcrun_context_
     .exec_func_arg = context->exec_func_arg,
   };
 
-+ // 检查config.json里面annotation是否定义了stdout,stderr
++ // 检查config.json的annotation是否定义了stdout,stderr
   if (def->hooks
       && (def->hooks->prestart_len || def->hooks->poststart_len || def->hooks->create_runtime_len
           || def->hooks->create_container_len || def->hooks->start_container_len))
@@ -530,7 +530,7 @@ libcrun_container_run_internal (libcrun_container_t *container, libcrun_context_
 
   container->context = context;
 
-- // 如果非detach或者systemd指定notify_socket，指定当前进程是subreaper，来收容孤儿进程
+- // 如果不是detach或者systemd指定notify_socket，使当前进程成为subreaper，来收容孤儿进程
   if (! detach || context->notify_socket)
     {
       ret = prctl (PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0);
@@ -538,6 +538,7 @@ libcrun_container_run_internal (libcrun_container_t *container, libcrun_context_
         return crun_make_error (err, errno, "set child subreaper");
     }
 
+- // 默认是为每个进程创建keyring，除非有no_new_keyring
   if (! context->no_new_keyring)
     {
       const char *label = NULL;
@@ -566,6 +567,7 @@ libcrun_container_run_internal (libcrun_container_t *container, libcrun_context_
   if (UNLIKELY (ret < 0))
     return ret;
 
+- // 配置seccomp的output
   if (def->linux && (def->linux->seccomp || find_annotation (container, "run.oci.seccomp_bpf_data")))
     {
       ret = open_seccomp_output (context->id, &seccomp_fd, false, context->state_root, err);
@@ -582,6 +584,7 @@ libcrun_container_run_internal (libcrun_container_t *container, libcrun_context_
         return ret;
     }
 
+- // 如果指定console_socket，打开得到fd
   if (context->console_socket)
     {
       console_socket_fd = open_unix_domain_client_socket (context->console_socket, 0, err);
@@ -590,6 +593,7 @@ libcrun_container_run_internal (libcrun_container_t *container, libcrun_context_
       container_args.console_socket_fd = console_socket_fd;
     }
 
+- // 得到cgroup模式
   cgroup_mode = libcrun_get_cgroup_mode (err);
   if (UNLIKELY (cgroup_mode < 0))
     return cgroup_mode;
@@ -599,6 +603,7 @@ libcrun_container_run_internal (libcrun_container_t *container, libcrun_context_
   if (UNLIKELY (pid < 0))
     return pid;
 
++ 如果没有定义fifo_exec，同时systemd指定notify_socket
   if (context->fifo_exec_wait_fd < 0 && context->notify_socket)
     {
       /* Do not open the notify socket here on "create".  "start" will take care of it.  */
