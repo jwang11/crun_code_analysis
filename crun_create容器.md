@@ -170,7 +170,7 @@ crun_command_create (struct crun_global_arguments *global_args, int argc, char *
     return ret;
 
 - // 根据oci规范生成container对象。
-- //解析config.json，转变为runtime_spec_schema_config_schema对象，放入container->container_def，返回container
+- // 解析config.json，转变为runtime_spec_schema_config_schema对象，放入container->container_def，返回container
 + container = libcrun_container_load_from_file (config_file, err);
   if (container == NULL)
     libcrun_fail_with_error (0, "error loading config.json");
@@ -253,11 +253,11 @@ init_libcrun_context (libcrun_context_t *con, const char *id, struct crun_global
 
 > crun_command_create -> libcrun_container_load_from_file
 ```diff
-- //container的结构定义，包含了schema和context
+- //container的结构定义
 struct libcrun_container_s
 {
   /* Container parsed from the runtime json file.  */
-  runtime_spec_schema_config_schema *container_def;
++ runtime_spec_schema_config_schema *container_def;
 
   uid_t host_uid;
   gid_t host_gid;
@@ -268,7 +268,7 @@ struct libcrun_container_s
   bool use_intermediate_userns;
 
   void *private_data;
-  struct libcrun_context_s *context;
++ struct libcrun_context_s *context;
 };
 
 - // 定义libcrun_container_t
@@ -316,9 +316,7 @@ libcrun_container_load_from_file (const char *path, libcrun_error_t *err)
     }
 + return make_container (container_def);
 }
-```
->> libcrun_container_load_from_file -> ime_spec_schema_config_schema_parse_file
-```diff
+
 runtime_spec_schema_config_schema *
 runtime_spec_schema_config_schema_parse_file (const char *filename, const struct parser_context *ctx, parser_error *err)
 {
@@ -378,8 +376,7 @@ libcrun_container_create (libcrun_context_t *context, libcrun_container_t *conta
   cleanup_close int pipefd1 = -1;
   cleanup_close int exec_fifo_fd = -1;
   
-+ //为1表示，crun create 指令不阻塞，直接返回（只有crun run这个detach是0）
-- context->detach = 1;
+  context->detach = 1;
 
   container->context = context;
 
@@ -390,6 +387,7 @@ libcrun_container_create (libcrun_context_t *context, libcrun_container_t *conta
   if (UNLIKELY (ret < 0))
     return ret;
 
+- // 如果terminal=true，在create的时候必须提供console_socket。（run的时候可以不提供，crun内部会创建）
   if (def->process && def->process->terminal && context->console_socket == NULL)
     return crun_make_error (err, 0, "use --console-socket with create when a terminal is used");
 
@@ -518,6 +516,7 @@ libcrun_container_run_internal (libcrun_container_t *container, libcrun_context_
     .exec_func_arg = context->exec_func_arg,
   };
 
++ // 检查config.json里面annotation是否定义了stdout,stderr
   if (def->hooks
       && (def->hooks->prestart_len || def->hooks->poststart_len || def->hooks->create_runtime_len
           || def->hooks->create_container_len || def->hooks->start_container_len))
@@ -531,6 +530,7 @@ libcrun_container_run_internal (libcrun_container_t *container, libcrun_context_
 
   container->context = context;
 
+- // 如果非detach或者systemd指定notify_socket，指定当前进程是subreaper，来收容孤儿进程
   if (! detach || context->notify_socket)
     {
       ret = prctl (PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0);
