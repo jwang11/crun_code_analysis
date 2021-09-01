@@ -1347,7 +1347,7 @@ init_container (libcrun_container_t *container, int sync_socket_container, struc
 ```diff
 - 生成uidmap和gidmap文件
 ```
-```
+```diff
 int
 libcrun_set_usernamespace (libcrun_container_t *container, pid_t pid, libcrun_error_t *err)
 {
@@ -1479,7 +1479,7 @@ libcrun_set_usernamespace (libcrun_container_t *container, pid_t pid, libcrun_er
             }
 
           single_mapping_len = sprintf (single_mapping, MAPPING_FMT_1, container->container_uid, container->host_uid);
-+          ret = write_file (uid_map_file, single_mapping, single_mapping_len, err);
++         ret = write_file (uid_map_file, single_mapping, single_mapping_len, err);
         }
     }
   if (UNLIKELY (ret < 0))
@@ -1721,7 +1721,7 @@ wait_for_process (pid_t pid, libcrun_context_t *context, int terminal_fd, int no
 ```
 
 - ***container_init***
-```
+```diff
 - container_init是容器的entrypoint，也是执行的最后一步
 ```
 ```diff
@@ -1749,7 +1749,7 @@ container_init (void *args, char *notify_socket, int sync_socket, libcrun_error_
       return crun_make_error (err, errno, "read from sync socket");
     }
 
-+ // 完成contaienr最后阶段初始化工作，如HOME，mounts, console, hostname，capabilities, 
+- // 完成contaienr最后阶段初始化工作，如HOME，mounts, console, hostname，capabilities, 
 + ret = container_init_setup (args, own_pid, notify_socket, sync_socket, &exec_path, err);
   if (UNLIKELY (ret < 0))
     {
@@ -1868,7 +1868,10 @@ container_init (void *args, char *notify_socket, int sync_socket, libcrun_error_
 
   return crun_make_error (err, errno, "exec container process `%s`", exec_path);
 }
+```
 
+> container_init -> container_init_setup
+```diff
 /* Initialize the environment where the container process runs.
    It is used by the container init process.  */
 static int
