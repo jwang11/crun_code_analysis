@@ -1870,7 +1870,7 @@ container_init (void *args, char *notify_socket, int sync_socket, libcrun_error_
 }
 ```
 
-> container_init -> container_init_setup
+> ***container_init -> container_init_setup***
 ```diff
 /* Initialize the environment where the container process runs.
    It is used by the container init process.  */
@@ -1930,7 +1930,7 @@ container_init_setup (void *args, pid_t own_pid, char *notify_socket, int sync_s
     return ret;
 
   /* sync 2 and 3 are sent as part of libcrun_set_mounts.  */
-  ret = libcrun_set_mounts (container, rootfs, send_sync_cb, &sync_socket, err);
++ ret = libcrun_set_mounts (container, rootfs, send_sync_cb, &sync_socket, err);
   if (UNLIKELY (ret < 0))
     return ret;
 
@@ -2115,6 +2115,119 @@ container_init_setup (void *args, pid_t own_pid, char *notify_socket, int sync_s
       if (putenv (notify_socket) < 0)
         return crun_make_error (err, errno, "putenv `%s`", notify_socket);
     }
+
+  return 0;
+}
+```
+
+>> ***container_init -> container_init_setup -> libcrun_set_mounts***
+```diff
+int
+libcrun_set_mounts (libcrun_container_t *container, const char *rootfs, set_mounts_cb_t cb, void *cb_data, libcrun_error_t *err)
+{
+  int rootfsfd = -1;
+  int ret = 0, is_user_ns = 0;
+  unsigned long rootfs_propagation = 0;
+  cleanup_close int rootfsfd_cleanup = -1;
+  runtime_spec_schema_config_schema *def = container->container_def;
+
+  if (rootfs == NULL || def->mounts == NULL)
+    return 0;
+
+  if (def->linux->rootfs_propagation)
+    rootfs_propagation = get_mount_flags (def->linux->rootfs_propagation, 0, NULL, NULL);
+
+  if ((rootfs_propagation & (MS_SHARED | MS_SLAVE | MS_PRIVATE | MS_UNBINDABLE)) == 0)
+    rootfs_propagation = MS_REC | MS_PRIVATE;
+
+  get_private_data (container)->rootfs_propagation = rootfs_propagation;
+
+  if (get_private_data (container)->unshare_flags & CLONE_NEWNS)
+    {
+      ret = do_mount (container, NULL, -1, "/", NULL, rootfs_propagation, NULL, LABEL_MOUNT, err);
+      if (UNLIKELY (ret < 0))
+        return ret;
+
+      ret = make_parent_mount_private (rootfs, err);
+      if (UNLIKELY (ret < 0))
+        return ret;
+
+      ret = do_mount (container, rootfs, -1, rootfs, NULL, MS_BIND | MS_REC | MS_PRIVATE, NULL, LABEL_MOUNT, err);
+      if (UNLIKELY (ret < 0))
+        return ret;
+    }
+
+  if (rootfs == NULL)
+    rootfsfd = AT_FDCWD;
+  else
+    {
+      rootfsfd = rootfsfd_cleanup = open (rootfs, O_PATH | O_CLOEXEC);
+      if (UNLIKELY (rootfsfd < 0))
+        return crun_make_error (err, errno, "open `%s`", rootfs);
+    }
+
+  get_private_data (container)->rootfs = rootfs;
+  get_private_data (container)->rootfsfd = rootfsfd;
+  get_private_data (container)->rootfs_len = rootfs ? strlen (rootfs) : 0;
+
+  if (def->root->readonly)
+    {
+      struct remount_s *r;
+      unsigned long remount_flags = MS_REMOUNT | MS_BIND | MS_RDONLY;
+      int fd;
+
+      fd = dup (rootfsfd);
+      if (UNLIKELY (fd < 0))
+        return crun_make_error (err, errno, "dup fd for `%s`", rootfs);
+
+      r = make_remount (fd, rootfs, remount_flags, NULL, get_private_data (container)->remounts);
+      get_private_data (container)->remounts = r;
+    }
+
+  ret = libcrun_container_enter_cgroup_ns (container, err);
+  if (UNLIKELY (ret < 0))
+    return ret;
+
+  ret = do_mounts (container, rootfsfd, rootfs, err);
+  if (UNLIKELY (ret < 0))
+    return ret;
+
+  is_user_ns = (get_private_data (container)->unshare_flags & CLONE_NEWUSER);
+  if (! is_user_ns)
+    {
+      is_user_ns = check_running_in_user_namespace (err);
+      if (UNLIKELY (is_user_ns < 0))
+        return is_user_ns;
+    }
+
+  if (! get_private_data (container)->mount_dev_from_host)
+    {
+      ret = create_missing_devs (container, is_user_ns ? true : false, err);
+      if (UNLIKELY (ret < 0))
+        return ret;
+    }
+
+  /* Notify the callback after all the mounts are ready but before making them read-only.  */
+  if (cb)
+    {
+      ret = cb (cb_data, err);
+      if (UNLIKELY (ret < 0))
+        return ret;
+    }
+
+  ret = do_finalize_notify_socket (container, err);
+  if (UNLIKELY (ret < 0))
+    return ret;
+
+  ret = do_masked_and_readonly_paths (container, err);
+  if (UNLIKELY (ret < 0))
+    return ret;
+
+  ret = finalize_mounts (container, err);
+  if (UNLIKELY (ret < 0))
+    return ret;
+
+  get_private_data (container)->rootfsfd = -1;
 
   return 0;
 }
