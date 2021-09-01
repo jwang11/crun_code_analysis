@@ -375,8 +375,9 @@ libcrun_container_create (libcrun_context_t *context, libcrun_container_t *conta
   cleanup_close int pipefd0 = -1;
   cleanup_close int pipefd1 = -1;
   cleanup_close int exec_fifo_fd = -1;
-  
-  context->detach = 1;
+ 
+- // crun create本身没有detach命令行参数，这里强制设置为1
+- context->detach = 1;
 
   container->context = context;
 
@@ -403,9 +404,9 @@ libcrun_container_create (libcrun_context_t *context, libcrun_container_t *conta
   context->fifo_exec_wait_fd = exec_fifo_fd;
   exec_fifo_fd = -1;
 
-
+- // 按照LIBCRUN_RUN_OPTIONS_PREFORK是否设置有两条路
   if ((options & LIBCRUN_RUN_OPTIONS_PREFORK) == 0)
-- // 没有LIBCRUN_RUN_OPTIONS_PREFORK，走这里  
+- // 没有LIBCRUN_RUN_OPTIONS_PREFORK  
     {
       ret = libcrun_copy_config_file (context->id, context->state_root, context->config_file, context->config_file_content, err);
       if (UNLIKELY (ret < 0))
@@ -417,7 +418,7 @@ libcrun_container_create (libcrun_context_t *context, libcrun_container_t *conta
       return ret;
     }
 
-- // 有LIBCRUN_RUN_OPTIONS_PREFORK，走这里
+- // 有LIBCRUN_RUN_OPTIONS_PREFORK
   ret = pipe (container_ready_pipe);
   if (UNLIKELY (ret < 0))
     return crun_make_error (err, errno, "pipe");
@@ -530,7 +531,7 @@ libcrun_container_run_internal (libcrun_container_t *container, libcrun_context_
 
   container->context = context;
 
-- // 如果不是detach或者systemd指定notify_socket，使当前进程成为subreaper，来收容孤儿进程
+- // 如果不是detach或者systemd指定notify_socket，使当前进程成为subreaper，来收容孤儿进程。注意，运行crun create时，detach=1
   if (! detach || context->notify_socket)
     {
       ret = prctl (PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0);
@@ -551,7 +552,7 @@ libcrun_container_run_internal (libcrun_container_t *container, libcrun_context_
         return ret;
     }
 
-- // 如果没有console_socket而且不是detach模式，就创建一对socket_pair做console输出
+- // 如果没有console_socket而且不是detach模式，就创建一对socket_pair做console输出。
   if (def->process && def->process->terminal && ! detach && context->console_socket == NULL)
     {
       container_args.has_terminal_socket_pair = 1;
@@ -567,7 +568,7 @@ libcrun_container_run_internal (libcrun_container_t *container, libcrun_context_
   if (UNLIKELY (ret < 0))
     return ret;
 
-- // 配置seccomp的output
+- // 得到seccomp.bpf文件的fd
   if (def->linux && (def->linux->seccomp || find_annotation (container, "run.oci.seccomp_bpf_data")))
     {
       ret = open_seccomp_output (context->id, &seccomp_fd, false, context->state_root, err);
@@ -826,6 +827,7 @@ libcrun_run_linux_container (libcrun_container_t *container, container_entrypoin
   if (UNLIKELY (ret < 0))
     return ret;
 
++ // 把unshare的namespace信息放入priviate data
   get_private_data (container)->unshare_flags = init_status.all_namespaces;
 #if CLONE_NEWCGROUP
   /* cgroup will be unshared later.  Once the process is in the correct cgroup.  */
