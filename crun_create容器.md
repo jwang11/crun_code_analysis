@@ -517,7 +517,7 @@ libcrun_container_run_internal (libcrun_container_t *container, libcrun_context_
     .exec_func_arg = context->exec_func_arg,
   };
 
-+ // 检查config.json的annotation是否定义了stdout,stderr
+- // 检查config.json的annotation是否定义了stdout,stderr
   if (def->hooks
       && (def->hooks->prestart_len || def->hooks->poststart_len || def->hooks->create_runtime_len
           || def->hooks->create_container_len || def->hooks->start_container_len))
@@ -599,12 +599,12 @@ libcrun_container_run_internal (libcrun_container_t *container, libcrun_context_
   if (UNLIKELY (cgroup_mode < 0))
     return cgroup_mode;
 
-- // 运行一个linux容器，注意参数entrypoint=container_init，返回grand child pid以及sync_socket
+- // 运行一个linux容器，注意参数entrypoint=container_init，返回grand child的PID以及sync_socket
 + pid = libcrun_run_linux_container (container, container_init, &container_args, &sync_socket, err);
   if (UNLIKELY (pid < 0))
     return pid;
 
-+ 如果没有定义fifo_exec，同时systemd指定notify_socket
+- // 如果没有定义fifo_exec，同时systemd指定notify_socket
   if (context->fifo_exec_wait_fd < 0 && context->notify_socket)
     {
       /* Do not open the notify socket here on "create".  "start" will take care of it.  */
@@ -732,7 +732,7 @@ libcrun_container_run_internal (libcrun_container_t *container, libcrun_context_
   if (UNLIKELY (ret < 0))
     return cleanup_watch (context, def, cgroup_path, cgroup_mode, pid, sync_socket, terminal_fd, err);
 
-+ // 得到container端传过来的pty masterfd，设置好状态
+- // 得到container端传过来的pty masterfd，设置好状态
   if (def->process && def->process->terminal && ! detach && context->console_socket == NULL)
     {
       terminal_fd = receive_fd_from_socket (socket_pair_0, err);
@@ -784,7 +784,7 @@ libcrun_container_run_internal (libcrun_container_t *container, libcrun_context_
         return cleanup_watch (context, def, cgroup_path, cgroup_mode, pid, sync_socket, terminal_fd, err);
     }
 
-  ret = wait_for_process (pid, context, terminal_fd, notify_socket, container_ready_fd, seccomp_notify_fd,
++  ret = wait_for_process (pid, context, terminal_fd, notify_socket, container_ready_fd, seccomp_notify_fd,
                           seccomp_notify_plugins, err);
   if (! context->detach)
     {
@@ -801,7 +801,7 @@ libcrun_container_run_internal (libcrun_container_t *container, libcrun_context_
 ```diff
 - linux container的初始化总体分为host端和container端，container端是host端fork出来，是父子关系
 - container端为了正确设置namespace还会fork一次
-- 返回grand child pid
+- 返回grand child的PID
 ```
 
 ```diff
@@ -834,8 +834,8 @@ libcrun_run_linux_container (libcrun_container_t *container, container_entrypoin
   init_status.all_namespaces &= ~CLONE_NEWCGROUP;
 #endif
 
-+ // 建立双工的socketpair，用来host <-> container通信
-  ret = socketpair (AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sync_socket);
+- // 建立双工的socketpair，用来host <-> container通信
++ ret = socketpair (AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sync_socket);
   if (UNLIKELY (ret < 0))
     return crun_make_error (err, errno, "socketpair");
 
@@ -850,8 +850,8 @@ libcrun_run_linux_container (libcrun_container_t *container, container_entrypoin
         return ret;
     }
 #endif
-+ // 获取config.json指定的process里的uid，gid，默认是0，代表root
-  get_uid_gid_from_def (container->container_def, &container->container_uid, &container->container_gid);
+- // 获取config.json指定的process里的uid，gid，默认是0，代表root
++ get_uid_gid_from_def (container->container_def, &container->container_uid, &container->container_gid);
 
   /* This must be done before we enter a user namespace.  */
   if (def->process)
@@ -1347,6 +1347,7 @@ init_container (libcrun_container_t *container, int sync_socket_container, struc
 ```diff
 - 生成uidmap和gidmap文件
 ```
+```
 int
 libcrun_set_usernamespace (libcrun_container_t *container, pid_t pid, libcrun_error_t *err)
 {
@@ -1433,7 +1434,7 @@ libcrun_set_usernamespace (libcrun_container_t *container, pid_t pid, libcrun_er
         }
 
       xasprintf (&gid_map_file, "/proc/%d/gid_map", pid);
-      ret = write_file (gid_map_file, gid_map, gid_map_len, err);
++     ret = write_file (gid_map_file, gid_map, gid_map_len, err);
       if (ret < 0 && ! def->linux->gid_mappings_len)
         {
           size_t single_mapping_len;
@@ -1537,6 +1538,184 @@ join_namespaces (runtime_spec_schema_config_schema *def, int *namespaces_to_join
             return crun_make_error (err, errno, "chdir(.)");
         }
     }
+  return 0;
+}
+```
+
+- ***libcrun_container_run_internal -> wait_for_process***
+```diff
+static int
+wait_for_process (pid_t pid, libcrun_context_t *context, int terminal_fd, int notify_socket, int container_ready_fd,
+                  int seccomp_notify_fd, const char *seccomp_notify_plugins, libcrun_error_t *err)
+{
+  cleanup_close int epollfd = -1;
+  cleanup_close int signalfd = -1;
+  int ret, container_exit_code = 0, last_process;
+  sigset_t mask;
+  int fds[10];
+  int levelfds[10];
+  int levelfds_len = 0;
+  int fds_len = 0;
+  cleanup_seccomp_notify_context struct seccomp_notify_context_s *seccomp_notify_ctx = NULL;
+
+  container_exit_code = 0;
+
+  if (context->pid_file)
+    {
+      char buf[12];
+      size_t buf_len = sprintf (buf, "%d", pid);
+      ret = write_file_with_flags (context->pid_file, O_CREAT | O_TRUNC, buf, buf_len, err);
+      if (UNLIKELY (ret < 0))
+        return ret;
+    }
+
+  /* Also exit if there is nothing more to wait for.  */
+  if (context->detach && notify_socket < 0)
+    return 0;
+
+  if (container_ready_fd >= 0)
+    {
+      ret = 0;
+      TEMP_FAILURE_RETRY (write (container_ready_fd, &ret, sizeof (ret)));
+      close_and_reset (&container_ready_fd);
+    }
+
+  sigfillset (&mask);
+  ret = sigprocmask (SIG_BLOCK, &mask, NULL);
+  if (UNLIKELY (ret < 0))
+    return crun_make_error (err, errno, "sigprocmask");
+
+  signalfd = create_signalfd (&mask, err);
+  if (UNLIKELY (signalfd < 0))
+    return signalfd;
+
+  ret = reap_subprocesses (pid, &container_exit_code, &last_process, err);
+  if (UNLIKELY (ret < 0))
+    return ret;
+
+  if (last_process)
+    return container_exit_code;
+
+  if (seccomp_notify_fd >= 0)
+    {
+      cleanup_free char *state_root = NULL;
+      cleanup_free char *oci_config_path = NULL;
+
+      struct libcrun_load_seccomp_notify_conf_s conf;
+      memset (&conf, 0, sizeof conf);
+
+      state_root = libcrun_get_state_directory (context->state_root, context->id);
+      if (UNLIKELY (state_root == NULL))
+        return crun_make_error (err, 0, "cannot get state directory");
+
+      ret = append_paths (&oci_config_path, err, state_root, "config.json", NULL);
+      if (UNLIKELY (ret < 0))
+        return ret;
+
+      conf.runtime_root_path = state_root;
+      conf.name = context->id;
+      conf.bundle_path = context->bundle;
+      conf.oci_config_path = oci_config_path;
+
+      ret = set_blocking_fd (seccomp_notify_fd, 0, err);
+      if (UNLIKELY (ret < 0))
+        return ret;
+
+      ret = libcrun_load_seccomp_notify_plugins (&seccomp_notify_ctx, seccomp_notify_plugins, &conf, err);
+      if (UNLIKELY (ret < 0))
+        return ret;
+
+      fds[fds_len++] = seccomp_notify_fd;
+    }
+
+  fds[fds_len++] = signalfd;
+  if (notify_socket >= 0)
+    fds[fds_len++] = notify_socket;
+  if (terminal_fd >= 0)
+    {
+      fds[fds_len++] = 0;
+      levelfds[levelfds_len++] = terminal_fd;
+    }
+  fds[fds_len++] = -1;
+  levelfds[levelfds_len++] = -1;
+
+  epollfd = epoll_helper (fds, levelfds, err);
+  if (UNLIKELY (epollfd < 0))
+    return epollfd;
+
+  while (1)
+    {
+      struct signalfd_siginfo si;
+      ssize_t res;
+      struct epoll_event events[10];
+      int i, nr_events;
+
+      nr_events = TEMP_FAILURE_RETRY (epoll_wait (epollfd, events, 10, -1));
+      if (UNLIKELY (nr_events < 0))
+        return crun_make_error (err, errno, "epoll_wait");
+
+      for (i = 0; i < nr_events; i++)
+        {
+          if (events[i].data.fd == 0)
+            {
+              ret = copy_from_fd_to_fd (0, terminal_fd, 0, err);
+              if (UNLIKELY (ret < 0))
+                return crun_error_wrap (err, "copy to terminal fd");
+            }
+          else if (events[i].data.fd == seccomp_notify_fd)
+            {
+              ret = libcrun_seccomp_notify_plugins (seccomp_notify_ctx, seccomp_notify_fd, err);
+              if (UNLIKELY (ret < 0))
+                return ret;
+            }
+          else if (events[i].data.fd == terminal_fd)
+            {
+              ret = set_blocking_fd (terminal_fd, 0, err);
+              if (UNLIKELY (ret < 0))
+                return crun_error_wrap (err, "set terminal fd not blocking");
+
+              ret = copy_from_fd_to_fd (terminal_fd, 1, 1, err);
+              if (UNLIKELY (ret < 0))
+                return crun_error_wrap (err, "copy from terminal fd");
+
+              ret = set_blocking_fd (terminal_fd, 1, err);
+              if (UNLIKELY (ret < 0))
+                return crun_error_wrap (err, "set terminal fd blocking");
+            }
+          else if (events[i].data.fd == notify_socket)
+            {
+              ret = handle_notify_socket (notify_socket, err);
+              if (UNLIKELY (ret < 0))
+                return ret;
+              if (ret && context->detach)
+                return 0;
+            }
+          else if (events[i].data.fd == signalfd)
+            {
+              res = TEMP_FAILURE_RETRY (read (signalfd, &si, sizeof (si)));
+              if (UNLIKELY (res < 0))
+                return crun_make_error (err, errno, "read from signalfd");
+              if (si.ssi_signo == SIGCHLD)
+                {
+                  ret = reap_subprocesses (pid, &container_exit_code, &last_process, err);
+                  if (UNLIKELY (ret < 0))
+                    return ret;
+                  if (last_process)
+                    return container_exit_code;
+                }
+              else
+                {
+                  /* Send any other signal to the child process.  */
+                  ret = kill (pid, si.ssi_signo);
+                }
+            }
+          else
+            {
+              return crun_make_error (err, 0, "unknown fd from epoll_wait");
+            }
+        }
+    }
+
   return 0;
 }
 ```
